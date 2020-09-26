@@ -7,14 +7,13 @@
 Train a new model on one or across multiple GPUs.
 """
 
-import argparse
 import logging
-import math
-import random
-import sys
 
+import math
 import numpy as np
+import sys
 import torch
+
 from fairseq import (
     checkpoint_utils,
     distributed_utils,
@@ -27,7 +26,6 @@ from fairseq.data import iterators
 from fairseq.logging import meters, metrics, progress_bar
 from fairseq.model_parallel.megatron_trainer import MegatronTrainer
 from fairseq.trainer import Trainer
-
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -42,7 +40,7 @@ def main(args):
     utils.import_user_module(args)
 
     assert (
-        args.max_tokens is not None or args.max_sentences is not None
+            args.max_tokens is not None or args.max_sentences is not None
     ), "Must specify batch size either with --max-tokens or --max-sentences"
     metrics.reset()
 
@@ -212,7 +210,7 @@ def train(args, trainer, task, epoch_itr):
     num_updates = trainer.get_num_updates()
     for i, samples in enumerate(progress):
         with metrics.aggregate("train_inner"), torch.autograd.profiler.record_function(
-            "train_step-%d" % i
+                "train_step-%d" % i
         ):
             log_output = trainer.train_step(samples)
             if log_output is None:  # OOM, overflow, ...
@@ -249,14 +247,14 @@ def train(args, trainer, task, epoch_itr):
 def validate_and_save(args, trainer, task, epoch_itr, valid_subsets, end_of_epoch):
     num_updates = trainer.get_num_updates()
     do_save = (
-        args.save_interval_updates > 0
-        and num_updates > 0
-        and num_updates % args.save_interval_updates == 0
-    ) or (end_of_epoch and epoch_itr.epoch % args.save_interval == 0)
+                      args.save_interval_updates > 0
+                      and num_updates > 0
+                      and num_updates % args.save_interval_updates == 0
+              ) or (end_of_epoch and epoch_itr.epoch % args.save_interval == 0)
     do_validate = (
-        (not end_of_epoch and do_save)  # validate during mid-epoch saves
-        or (end_of_epoch and epoch_itr.epoch % args.validate_interval == 0)
-    ) and not args.disable_validation
+                          (not end_of_epoch and do_save)  # validate during mid-epoch saves
+                          or (end_of_epoch and epoch_itr.epoch % args.validate_interval == 0)
+                  ) and not args.disable_validation
 
     # Validate
     valid_losses = [None]
@@ -266,12 +264,12 @@ def validate_and_save(args, trainer, task, epoch_itr, valid_subsets, end_of_epoc
     # Stopping conditions
     max_update = args.max_update or math.inf
     should_stop = (
-        should_stop_early(args, valid_losses[0])
-        or trainer.get_num_updates() >= max_update
-        or (
-            args.stop_time_hours > 0
-            and trainer.cumulative_training_time() / (60 * 60) > args.stop_time_hours
-        )
+            should_stop_early(args, valid_losses[0])
+            or trainer.get_num_updates() >= max_update
+            or (
+                    args.stop_time_hours > 0
+                    and trainer.cumulative_training_time() / (60 * 60) > args.stop_time_hours
+            )
     )
 
     # Save checkpoint

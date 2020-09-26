@@ -15,8 +15,10 @@ def get_parser():
     # fmt: off
     parser.add_argument('--dataset-impl', help='dataset implementation',
                         choices=indexed_dataset.get_available_dataset_impl())
-    parser.add_argument('--dict', metavar='FP', help='dictionary containing known words', default=None)
-    parser.add_argument('--input', metavar='FP', required=True, help='binarized file to read')
+    parser.add_argument('--dict', metavar='FP', help='dictionary containing known words',
+                        default="/home/data_ti5_c/wangdq/data/iwslt14.de-en.distill/data-bin/dict.en.txt")
+    parser.add_argument('--input', metavar='FP', help='binarized file to read',
+                        default="/home/data_ti5_c/wangdq/data/iwslt14.de-en.distill/data-bin/train.de-en.en")
     # fmt: on
 
     return parser

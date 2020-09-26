@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import ctypes
+
 import math
 import torch
 
@@ -11,9 +12,9 @@ try:
     from fairseq import libbleu
 except ImportError as e:
     import sys
+
     sys.stderr.write('ERROR: missing libbleu.so. run `pip install --editable .`\n')
     raise e
-
 
 C = ctypes.cdll.LoadLibrary(libbleu.__file__)
 
@@ -55,7 +56,8 @@ class SacrebleuScorer(object):
     def result_string(self, order=4):
         if order != 4:
             raise NotImplementedError
-        return self.sacrebleu.corpus_bleu(self.sys, [self.ref])
+        # bleu脚本该了版本
+        return self.sacrebleu.corpus_bleu(self.sys, [self.ref]).format()
 
 
 class Scorer(object):
@@ -125,5 +127,5 @@ class Scorer(object):
         fmt += ' (BP={:.3f}, ratio={:.3f}, syslen={}, reflen={})'
         bleup = [p * 100 for p in self.precision()[:order]]
         return fmt.format(order, self.score(order=order), *bleup,
-                          self.brevity(), self.stat.predlen/self.stat.reflen,
+                          self.brevity(), self.stat.predlen / self.stat.reflen,
                           self.stat.predlen, self.stat.reflen)

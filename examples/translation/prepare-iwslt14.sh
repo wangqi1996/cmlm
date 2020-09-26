@@ -2,25 +2,26 @@
 #
 # Adapted from https://github.com/facebookresearch/MIXER/blob/master/prepareData.sh
 
-echo 'Cloning Moses github repository (for tokenization scripts)...'
-git clone https://github.com/moses-smt/mosesdecoder.git
+#echo 'Cloning Moses github repository (for tokenization scripts)...'
+#git clone https://github.com/moses-smt/mosesdecoder.git
+#
+#echo 'Cloning Subword NMT repository (for BPE pre-processing)...'
+#git clone https://github.com/rsennrich/subword-nmt.git
 
-echo 'Cloning Subword NMT repository (for BPE pre-processing)...'
-git clone https://github.com/rsennrich/subword-nmt.git
-
-SCRIPTS=mosesdecoder/scripts
+SCRIPTS=/home/data_ti5_c/wangdq/code/mosesdecoder/scripts
 TOKENIZER=$SCRIPTS/tokenizer/tokenizer.perl
-LC=$SCRIPTS/tokenizer/lowercase.perl
 CLEAN=$SCRIPTS/training/clean-corpus-n.perl
-BPEROOT=subword-nmt/subword_nmt
+NORM_PUNC=$SCRIPTS/tokenizer/normalize-punctuation.perl
+REM_NON_PRINT_CHAR=$SCRIPTS/tokenizer/remove-non-printing-char.perl
+BPEROOT=/home/data_ti5_c/wangdq/code/subword-nmt/subword_nmt
 BPE_TOKENS=10000
 
 URL="https://wit3.fbk.eu/archive/2014-01/texts/de/en/de-en.tgz"
 GZ=de-en.tgz
 
 if [ ! -d "$SCRIPTS" ]; then
-    echo "Please set SCRIPTS variable correctly to point to Moses scripts."
-    exit
+  echo "Please set SCRIPTS variable correctly to point to Moses scripts."
+  exit
 fi
 
 src=de
@@ -37,10 +38,10 @@ cd $orig
 wget "$URL"
 
 if [ -f $GZ ]; then
-    echo "Data successfully downloaded."
+  echo "Data successfully downloaded."
 else
-    echo "Data not successfully downloaded."
-    exit
+  echo "Data not successfully downloaded."
+  exit
 fi
 
 tar zxvf $GZ
@@ -48,68 +49,67 @@ cd ..
 
 echo "pre-processing train data..."
 for l in $src $tgt; do
-    f=train.tags.$lang.$l
-    tok=train.tags.$lang.tok.$l
+  f=train.tags.$lang.$l
+  tok=train.tags.$lang.tok.$l
 
-    cat $orig/$lang/$f | \
-    grep -v '<url>' | \
-    grep -v '<talkid>' | \
-    grep -v '<keywords>' | \
-    sed -e 's/<title>//g' | \
-    sed -e 's/<\/title>//g' | \
-    sed -e 's/<description>//g' | \
-    sed -e 's/<\/description>//g' | \
-    perl $TOKENIZER -threads 8 -l $l > $tmp/$tok
-    echo ""
+  cat $orig/$lang/$f |
+    grep -v '<url>' |
+    grep -v '<talkid>' |
+    grep -v '<keywords>' |
+    sed -e 's/<title>//g' |
+    sed -e 's/<\/title>//g' |
+    sed -e 's/<description>//g' |
+    sed -e 's/<\/description>//g' |
+    perl $TOKENIZER -threads 8 -l $l >$tmp/$tok
+  echo ""
 done
 perl $CLEAN -ratio 1.5 $tmp/train.tags.$lang.tok $src $tgt $tmp/train.tags.$lang.clean 1 175
 for l in $src $tgt; do
-    perl $LC < $tmp/train.tags.$lang.clean.$l > $tmp/train.tags.$lang.$l
+  perl $LC <$tmp/train.tags.$lang.clean.$l >$tmp/train.tags.$lang.$l
 done
 
 echo "pre-processing valid/test data..."
 for l in $src $tgt; do
-    for o in `ls $orig/$lang/IWSLT14.TED*.$l.xml`; do
+  for o in $(ls $orig/$lang/IWSLT14.TED*.$l.xml); do
     fname=${o##*/}
     f=$tmp/${fname%.*}
     echo $o $f
-    grep '<seg id' $o | \
-        sed -e 's/<seg id="[0-9]*">\s*//g' | \
-        sed -e 's/\s*<\/seg>\s*//g' | \
-        sed -e "s/\’/\'/g" | \
-    perl $TOKENIZER -threads 8 -l $l | \
-    perl $LC > $f
+    grep '<seg id' $o |
+      sed -e 's/<seg id="[0-9]*">\s*//g' |
+      sed -e 's/\s*<\/seg>\s*//g' |
+      sed -e "s/\闂佺偨鍎婚幏锟�/\'/g" |
+      perl $TOKENIZER -threads 8 -l $l |
+      perl $LC >$f
     echo ""
-    done
+  done
 done
-
 
 echo "creating train, valid, test..."
 for l in $src $tgt; do
-    awk '{if (NR%23 == 0)  print $0; }' $tmp/train.tags.de-en.$l > $tmp/valid.$l
-    awk '{if (NR%23 != 0)  print $0; }' $tmp/train.tags.de-en.$l > $tmp/train.$l
+  awk '{if (NR%23 == 0)  print $0; }' $tmp/train.tags.de-en.$l >$tmp/valid.$l
+  awk '{if (NR%23 != 0)  print $0; }' $tmp/train.tags.de-en.$l >$tmp/train.$l
 
-    cat $tmp/IWSLT14.TED.dev2010.de-en.$l \
-        $tmp/IWSLT14.TEDX.dev2012.de-en.$l \
-        $tmp/IWSLT14.TED.tst2010.de-en.$l \
-        $tmp/IWSLT14.TED.tst2011.de-en.$l \
-        $tmp/IWSLT14.TED.tst2012.de-en.$l \
-        > $tmp/test.$l
+  cat $tmp/IWSLT14.TED.dev2010.de-en.$l \
+    $tmp/IWSLT14.TEDX.dev2012.de-en.$l \
+    $tmp/IWSLT14.TED.tst2010.de-en.$l \
+    $tmp/IWSLT14.TED.tst2011.de-en.$l \
+    $tmp/IWSLT14.TED.tst2012.de-en.$l \
+    >$tmp/test.$l
 done
 
 TRAIN=$tmp/train.en-de
 BPE_CODE=$prep/code
 rm -f $TRAIN
 for l in $src $tgt; do
-    cat $tmp/train.$l >> $TRAIN
+  cat $tmp/train.$l >>$TRAIN
 done
 
 echo "learn_bpe.py on ${TRAIN}..."
-python $BPEROOT/learn_bpe.py -s $BPE_TOKENS < $TRAIN > $BPE_CODE
+python $BPEROOT/learn_bpe.py -s $BPE_TOKENS <$TRAIN >$BPE_CODE
 
 for L in $src $tgt; do
-    for f in train.$L valid.$L test.$L; do
-        echo "apply_bpe.py to ${f}..."
-        python $BPEROOT/apply_bpe.py -c $BPE_CODE < $tmp/$f > $prep/$f
-    done
+  for f in train.$L valid.$L test.$L; do
+    echo "apply_bpe.py to ${f}..."
+    python $BPEROOT/apply_bpe.py -c $BPE_CODE <$tmp/$f >$prep/$f
+  done
 done

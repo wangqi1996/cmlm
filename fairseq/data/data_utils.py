@@ -2,6 +2,7 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
+import numpy
 
 try:
     from collections.abc import Iterable
@@ -11,11 +12,8 @@ import contextlib
 import itertools
 import logging
 import os
-import sys
-import types
 
 import numpy as np
-
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +48,17 @@ def collate_tokens(values, pad_idx, eos_idx=None, left_pad=False, move_eos_to_be
 
     for i, v in enumerate(values):
         copy_tensor(v, res[i][size - len(v):] if left_pad else res[i][:len(v)])
+    return res
+
+
+def collate_tokens_list(values, pad_idx=0):
+    """Convert a list of numpy """
+    size = max(len(v) for v in values)
+    res = numpy.empty(shape=(len(values), size))
+    res.fill(pad_idx)
+    for i, value in enumerate(values):
+        res[i][:len(value)] = value
+
     return res
 
 
@@ -162,6 +171,7 @@ def _filter_by_size_dynamic(indices, size_fn, max_positions, raise_exception=Fal
                 a is None or b is None or a <= b
                 for a, b in zip(size_fn(idx), max_positions)
             )
+
     ignored = []
     itr = collect_filtered(check_size, indices, ignored)
     indices = np.fromiter(itr, dtype=np.int64, count=-1)
@@ -194,20 +204,20 @@ def filter_by_size(indices, dataset, max_positions, raise_exception=False):
 
     if len(ignored) > 0 and raise_exception:
         raise Exception((
-            'Size of sample #{} is invalid (={}) since max_positions={}, '
-            'skip this example with --skip-invalid-size-inputs-valid-test'
-        ).format(ignored[0], dataset.size(ignored[0]), max_positions))
+                            'Size of sample #{} is invalid (={}) since max_positions={}, '
+                            'skip this example with --skip-invalid-size-inputs-valid-test'
+                        ).format(ignored[0], dataset.size(ignored[0]), max_positions))
     if len(ignored) > 0:
         logger.warning((
-            '{} samples have invalid sizes and will be skipped, '
-            'max_positions={}, first few sample ids={}'
-        ).format(len(ignored), max_positions, ignored[:10]))
+                           '{} samples have invalid sizes and will be skipped, '
+                           'max_positions={}, first few sample ids={}'
+                       ).format(len(ignored), max_positions, ignored[:10]))
     return indices
 
 
 def batch_by_size(
-    indices, num_tokens_fn, max_tokens=None, max_sentences=None,
-    required_batch_size_multiple=1, fixed_shapes=None,
+        indices, num_tokens_fn, max_tokens=None, max_sentences=None,
+        required_batch_size_multiple=1, fixed_shapes=None,
 ):
     """
     Yield mini-batches of indices bucketed by size. Batches may contain
