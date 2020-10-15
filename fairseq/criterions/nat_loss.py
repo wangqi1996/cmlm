@@ -4,9 +4,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-
-import torch.nn.functional as F
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 from fairseq import metrics, utils
@@ -32,7 +31,8 @@ class LabelSmoothedDualImitationCriterion(FairseqCriterion):
         )
 
     def _compute_loss(
-        self, outputs, targets, masks=None, label_smoothing=0.0, name="loss", factor=1.0
+            self, outputs, targets, masks=None, label_smoothing=0.0, name="loss", factor=1.0,
+            weights=None
     ):
         """
             outputs: batch x len x d_model
@@ -49,6 +49,7 @@ class LabelSmoothedDualImitationCriterion(FairseqCriterion):
                 if dim is None
                 else x.float().mean(dim).type_as(x)
             )
+
         if masks is not None:
             outputs, targets = outputs[masks], targets[masks]
 
@@ -64,10 +65,25 @@ class LabelSmoothedDualImitationCriterion(FairseqCriterion):
                 losses = F.kl_div(logits, targets.to(logits.device), reduction='none')
                 losses = losses.sum(-1)
 
+            if weights is not None:
+                token_weight = None
+                if "dependency_weights" in weights and weights['dependency_weights'] is not None:
+                    token_weight = weights['dependency_weights'][masks]
+
+                if "freq_weights" in weights and weights['freq_weights'] is not None:
+                    freq_weight = weights['freq_weights'][targets]
+                    if token_weight is not None:
+                        token_weight = (token_weight + freq_weight) / 2
+                    else:
+                        token_weight = freq_weight
+
+                if token_weight is not None:
+                    losses.mul_(token_weight)
+
             nll_loss = mean_ds(losses)
             if label_smoothing > 0:
                 loss = nll_loss * (
-                    1 - label_smoothing) - mean_ds(logits) * label_smoothing
+                        1 - label_smoothing) - mean_ds(logits) * label_smoothing
             else:
                 loss = nll_loss
 
@@ -77,7 +93,7 @@ class LabelSmoothedDualImitationCriterion(FairseqCriterion):
     def _custom_loss(self, loss, name="loss", factor=1.0):
         return {"name": name, "loss": loss, "factor": factor}
 
-    def forward(self, model, sample, reduce=True):
+    def forward(self, model, sample, reduce=True, **kwargs):
         """Compute the loss for the given sample.
         Returns a tuple with three elements:
         1) the loss
@@ -93,10 +109,20 @@ class LabelSmoothedDualImitationCriterion(FairseqCriterion):
         )
         tgt_tokens, prev_output_tokens = sample["target"], sample["prev_target"]
 
-        outputs = model(src_tokens, src_lengths, prev_output_tokens, tgt_tokens)
+        outputs = model(src_tokens, src_lengths, prev_output_tokens, tgt_tokens, sample=sample, **kwargs)
         losses, nll_loss = [], []
 
+        # 仅仅预测依存树的下一层节点, 所以模型会主动传递mask
+        if sample.get('word_ins_mask', None) is not None:
+            outputs["word_ins"]["mask"] = sample['word_ins_mask']
+
+        # 取出需要回传的
+        train_need = None
+        if "train_need" in outputs:
+            train_need = outputs.pop('train_need')
+
         for obj in outputs:
+
             if outputs[obj].get("loss", None) is None:
                 _losses = self._compute_loss(
                     outputs[obj].get("out"),
@@ -104,7 +130,8 @@ class LabelSmoothedDualImitationCriterion(FairseqCriterion):
                     outputs[obj].get("mask", None),
                     outputs[obj].get("ls", 0.0),
                     name=obj + '-loss',
-                    factor=outputs[obj].get("factor", 1.0)
+                    factor=outputs[obj].get("factor", 1.0),
+                    weights=outputs[obj].get('weights', None)
                 )
             else:
                 _losses = self._custom_loss(
@@ -131,6 +158,8 @@ class LabelSmoothedDualImitationCriterion(FairseqCriterion):
             "ntokens": ntokens,
             "nsentences": nsentences,
             "sample_size": sample_size,
+            "train_need": train_need,
+            "need_print": train_need.get('print', {})
         }
 
         for l in losses:
@@ -162,6 +191,15 @@ class LabelSmoothedDualImitationCriterion(FairseqCriterion):
                     sample_size,
                     round=3,
                 )
+
+        # add some need print
+        if logging_outputs[0].get('need_print', None) is not None:
+            if "all_predict_head" in logging_outputs[0]['need_print']:
+                all_predict_head = sum(log['need_print'].get("all_predict_head") for log in logging_outputs)
+                correct_predict_head = sum(log['need_print'].get("correct_predict_head") for log in logging_outputs)
+                # print(correct_predict_head / all_predict_head)
+                metrics.log_scalar('dep_accuracy', correct_predict_head / all_predict_head, weight=all_predict_head,
+                                   round=3)
 
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:

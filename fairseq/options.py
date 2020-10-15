@@ -4,9 +4,9 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
-import sys
 from typing import Callable, List, Optional
 
+import sys
 import torch
 
 from fairseq import utils
@@ -93,11 +93,11 @@ def eval_bool(x, default=False):
 
 
 def parse_args_and_arch(
-    parser: argparse.ArgumentParser,
-    input_args: List[str] = None,
-    parse_known: bool = False,
-    suppress_defaults: bool = False,
-    modify_parser: Optional[Callable[[argparse.ArgumentParser], None]] = None,
+        parser: argparse.ArgumentParser,
+        input_args: List[str] = None,
+        parse_known: bool = False,
+        suppress_defaults: bool = False,
+        modify_parser: Optional[Callable[[argparse.ArgumentParser], None]] = None,
 ):
     """
     Args:
@@ -271,6 +271,45 @@ def get_parser(desc, default_task="translation"):
                         help='path to quantization config file')
     parser.add_argument('--profile', action='store_true', help='enable autograd profiler emit_nvtx')
 
+    # 使用mask predictor时添加的参数
+    parser.add_argument('--use-dependency-weight', action='store_true')  # 使用依存树来计算不同的损失
+
+    parser.add_argument('--loss-function', type=str, default="nmt_loss,length_loss")  # mask_predictor ,分割
+    parser.add_argument('--mask-predictor-method', default='linear')
+    parser.add_argument('--predictor-input', choices=['hidden-state', 'expect-embedding', 'token-embedding', 'score'],
+                        default='hidden-state')
+
+    parser.add_argument('--froze-nmt-model', action="store_true")
+
+    parser.add_argument('--noise-probability', default="none", choices=["none", "increase"])  # 使用递增的p
+
+    parser.add_argument('--use-reference-mask',
+                        action="store_true")  # train脚本，表示使用这个方式进行迭代细化 inference脚本，表示使用这个方式进行迭代细化
+
+    parser.add_argument('--dependency-tree-path', type=str, default="")  # 若为空，则表示不使用dependency tree
+    parser.add_argument('--dependency-modify-root', action="store_true")  # 是否修正根节点
+    parser.add_argument('--use-dependency-loss', action="store_true")  # 仅仅使用dependency，每层的预测目标是预测下一层的dependency
+    parser.add_argument('--random-modify-token', action="store_true")  # 请和dependency-modify-root配合使用
+
+    parser.add_argument('--use-iterative-epoch-with-time', action="store_true")  # 根据模型运行的结果来选择某个sample是否停止。
+    parser.add_argument('--use-dynamic-iterative-epoch', action="store_true")  # 根据sample的长度来确定迭代的长度
+    parser.add_argument('--iterative-training-epoch', default=2, type=int)  # 使用迭代训练的默认轮数
+
+    parser.add_argument('--use-baseline-train', action="store_true")
+
+    parser.add_argument('--freq-weight', action="store_true")
+    parser.add_argument('--latent-arch', type=str, default="transformer")
+
+    parser.add_argument('--accuracy', action="store_true")
+
+    parser.add_argument('--biaffine-input', type=str, default="-1")  # 0==encoder_out
+    parser.add_argument('--eval-accuracy', action="store_true")
+    parser.add_argument('--load-enc-dec', action="store_true")
+    parser.add_argument('--no-word-loss', action="store_true")
+
+    parser.add_argument('--posterior-loss', action="store_true")
+    parser.add_argument('--posterior-dep-loss', action="store_true")
+
     from fairseq.registry import REGISTRIES
     for registry_name, REGISTRY in REGISTRIES.items():
         parser.add_argument(
@@ -352,7 +391,7 @@ def add_dataset_args(parser, train=False, gen=False):
                         choices=get_available_dataset_impl(),
                         help='output dataset implementation')
     group.add_argument('--data-buffer-size', default=10, type=int, metavar='N',
-                        help='number of batches to preload')
+                       help='number of batches to preload')
     if train:
         group.add_argument('--train-subset', default='train', metavar='SPLIT',
                            help='data subset to use for training (e.g. train, valid, test)')
@@ -373,6 +412,7 @@ def add_dataset_args(parser, train=False, gen=False):
                                 ' (defaults to --max-sentences)')
         group.add_argument('--curriculum', default=0, type=int, metavar='N',
                            help='don\'t shuffle batches for first N epochs')
+
     if gen:
         group.add_argument('--gen-subset', default='test', metavar='SPLIT',
                            help='data subset to generate (train, valid, test)')
@@ -421,12 +461,12 @@ def add_distributed_training_args(parser, default_world_size=None):
                             're-reading the data')
     group.add_argument('--find-unused-parameters', default=False, action='store_true',
                        help='disable unused parameter detection (not applicable to '
-                       'no_c10d ddp-backend')
+                            'no_c10d ddp-backend')
     group.add_argument('--fast-stat-sync', default=False, action='store_true',
                        help='[deprecated] this is now defined per Criterion')
     group.add_argument('--broadcast-buffers', default=False, action='store_true',
                        help='Copy non-trainable parameters between GPUs, such as '
-                      'batchnorm population statistics')
+                            'batchnorm population statistics')
 
     group.add_argument('--distributed-wrapper', default='DDP', type=str,
                        choices=['DDP', 'SlowMo'],
@@ -632,6 +672,35 @@ def add_generation_args(parser):
     group.add_argument('--retain-dropout-modules', default=None, nargs='+', type=str,
                        help='if set, only retain dropout for the specified modules; '
                             'if not set, then dropout will be retained for all modules')
+
+    # 生成时使用的，先放在这里
+    parser.add_argument('--use-mask-predictor', action="store_true")
+    parser.add_argument('--use-reference-length', action='store_true',
+                        help='Use reference length at inference time')
+    parser.add_argument('--use-baseline-mask', action='store_true',
+                        help='Use baseline mask at inference time when iterator')
+    parser.add_argument('--use-dependency-tree', action='store_true',
+                        help='Use baseline mask at inference time when iterator')
+    parser.add_argument("--test-dependency-tree-path", type=str, default="")  # 生成时使用的依存树路径
+    parser.add_argument('--use-comma-mask', action='store_true',
+                        help='Use baseline mask at inference time when iterator')
+
+    parser.add_argument('--use-block-mask-size', default=0, type=int,
+                        help='the block size=n, and in the block, should unmask one')
+    parser.add_argument('--use-block-mask-method', default="none", type=str,
+                        choices=["none", "baseline", "probability"],
+                        help='the block size=n, and in the block, should unmask one')
+
+    parser.add_argument('--use-reference-probability', action="store_true",
+                        help='if the ground truth probability great than .., it not be masked')
+    parser.add_argument('--use-reference-probability-max', default=0.0, type=float,
+                        help='if the ground truth probability great than .., it not be masked')
+    parser.add_argument('--use-reference-probability-min', default=0.0, type=float,
+                        help='if the ground truth probability great than .., it not be masked')
+
+    parser.add_argument('--compute-dep-accuracy', action="store_true")
+
+    # use-reference-mask 和  use-reference-probability 可以叠加使用
 
     # special decoding format for advanced decoding.
     group.add_argument('--decoding-format', default=None, type=str, choices=['unigram', 'ensemble', 'vote', 'dp', 'bs'])

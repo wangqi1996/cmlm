@@ -5,3 +5,7 @@ from .iterative_nonautoregressive_transformer import *
 from .cmlm_transformer import *
 from .levenshtein_transformer import *
 from .insertion_transformer import *
+from .DepNAT import *
+from .biaffine import *
+from .fake_DepNAT import *
+from .GLAT import *

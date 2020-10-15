@@ -3,16 +3,14 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os
-
 import torch
 
-from fairseq.data import LanguagePairDataset
-
-from fairseq.utils import new_arange
-from fairseq.tasks import register_task
-from fairseq.tasks.translation import TranslationTask, load_langpair_dataset
 from fairseq import utils
+from fairseq.data import LanguagePairDataset
+from fairseq.tasks import register_task
+from fairseq.tasks.translation import TranslationTask, load_langpair_dataset, EVAL_BLEU_ORDER
+from fairseq.util2 import new_arange, get_base_mask
+
 
 @register_task('translation_lev')
 class TranslationLevenshteinTask(TranslationTask):
@@ -55,7 +53,7 @@ class TranslationLevenshteinTask(TranslationTask):
             prepend_bos=True,
         )
 
-    def inject_noise(self, target_tokens):
+    def inject_noise(self, target_tokens, noise_probability=None):
         def _random_delete(target_tokens):
             pad = self.tgt_dict.pad()
             bos = self.tgt_dict.bos()
@@ -78,15 +76,15 @@ class TranslationLevenshteinTask(TranslationTask):
 
             prev_target_tokens = target_tokens.gather(
                 1, target_rank).masked_fill_(target_cutoff, pad).gather(
-                    1,
-                    target_rank.masked_fill_(target_cutoff,
-                                             max_len).sort(1)[1])
+                1,
+                target_rank.masked_fill_(target_cutoff,
+                                         max_len).sort(1)[1])
             prev_target_tokens = prev_target_tokens[:, :prev_target_tokens.
-                                                    ne(pad).sum(1).max()]
+                ne(pad).sum(1).max()]
 
             return prev_target_tokens
 
-        def _random_mask(target_tokens):
+        def _random_mask(target_tokens, noise_probability=None):
             pad = self.tgt_dict.pad()
             bos = self.tgt_dict.bos()
             eos = self.tgt_dict.eos()
@@ -98,7 +96,11 @@ class TranslationLevenshteinTask(TranslationTask):
             target_score = target_tokens.clone().float().uniform_()
             target_score.masked_fill_(~target_masks, 2.0)
             target_length = target_masks.sum(1).float()
-            target_length = target_length * target_length.clone().uniform_()
+            if noise_probability is None:
+                # sample from [0,1]
+                target_length = target_length * target_length.clone().uniform_()  # 要mask的长度
+            else:
+                target_length = target_length * noise_probability
             target_length = target_length + 1  # make sure to mask at least one token.
 
             _, target_rank = target_score.sort(1)
@@ -120,7 +122,7 @@ class TranslationLevenshteinTask(TranslationTask):
         if self.args.noise == 'random_delete':
             return _random_delete(target_tokens)
         elif self.args.noise == 'random_mask':
-            return _random_mask(target_tokens)
+            return _random_mask(target_tokens, noise_probability)
         elif self.args.noise == 'full_mask':
             return _full_mask(target_tokens)
         elif self.args.noise == 'no_noise':
@@ -139,12 +141,23 @@ class TranslationLevenshteinTask(TranslationTask):
             reranking=getattr(args, 'iter_decode_with_external_reranker', False),
             decoding_format=getattr(args, 'decoding_format', None),
             adaptive=not getattr(args, 'iter_decode_force_max_iter', False),
-            retain_history=getattr(args, 'retain_iter_history', False))
+            retain_history=getattr(args, 'retain_iter_history', False),
+            args=args)
 
     def build_dataset_for_inference(self, src_tokens, src_lengths):
         return LanguagePairDataset(
             src_tokens, src_lengths, self.source_dictionary, append_bos=True
         )
+
+    def noise_probability_schedule(self, update_number):
+
+        if self.args.noise_probability == 'none':
+            return None
+        if update_number < 20000 or update_number > 250000:
+            return None
+        p = update_number / 250000
+
+        return p
 
     def train_step(self,
                    sample,
@@ -154,16 +167,53 @@ class TranslationLevenshteinTask(TranslationTask):
                    update_num,
                    ignore_grad=False):
         model.train()
-        sample['prev_target'] = self.inject_noise(sample['target'])
+        noise_probability = self.noise_probability_schedule(update_num)
+        sample['prev_target'] = self.inject_noise(sample['target'], noise_probability)
         loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0
         optimizer.backward(loss)
+
+        if "train_need" in logging_output:
+            logging_output.pop("train_need")
+
         return loss, sample_size, logging_output
 
     def valid_step(self, sample, model, criterion):
+        # 不用在乎梯度，没有梯度问题
         model.eval()
+
+        _logging_output = None
+        # 这个会不会和其余的地方冲突，但是因为是valid，没有loss一说
+        if self.args.eval_accuracy:
+            with torch.no_grad():
+                target_mask = get_base_mask(sample['target'])
+                sample['prev_target'] = sample['target'].masked_fill(target_mask, self.tgt_dict.unk())
+
+                _, _, _logging_output = criterion(model, sample, eval_accuracy=True)
+
         with torch.no_grad():
-            sample['prev_target'] = self.inject_noise(sample['target'])
+            sample['prev_target'] = self.inject_noise(sample['target'], None)
             loss, sample_size, logging_output = criterion(model, sample)
+
+            if _logging_output is not None:
+                logging_output.setdefault('need_print', {})
+                # 因为之前的办法计算的hidden是mask掉部分target token计算的
+                logging_output['need_print'].update(_logging_output['need_print'])
+
+        if getattr(self.args, 'eval_bleu', False):
+
+            bleu = self._inference_with_bleu(self.sequence_generator, sample, model)
+            logging_output['_bleu_sys_len'] = bleu.sys_len
+            logging_output['_bleu_ref_len'] = bleu.ref_len
+            # we split counts into separate entries so that they can be
+            # summed efficiently across workers using fast-stat-sync
+            assert len(bleu.counts) == EVAL_BLEU_ORDER
+            for i in range(EVAL_BLEU_ORDER):
+                logging_output['_bleu_counts_' + str(i)] = bleu.counts[i]
+                logging_output['_bleu_totals_' + str(i)] = bleu.totals[i]
+
+        if "train_need" in logging_output:
+            logging_output.pop("train_need")
+
         return loss, sample_size, logging_output

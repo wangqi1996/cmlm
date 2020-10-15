@@ -5,11 +5,12 @@
 
 from collections import namedtuple
 
-import torch
 import numpy as np
+import torch
 
 from fairseq import utils
-
+from fairseq.data.data_utils import collate_tokens_list
+from fairseq.util2 import load_dependency_head_tree
 
 DecoderOut = namedtuple('IterativeRefinementDecoderOut', [
     'output_tokens',
@@ -23,18 +24,19 @@ DecoderOut = namedtuple('IterativeRefinementDecoderOut', [
 
 class IterativeRefinementGenerator(object):
     def __init__(
-        self,
-        tgt_dict,
-        models=None,
-        eos_penalty=0.0,
-        max_iter=10,
-        max_ratio=2,
-        beam_size=1,
-        decoding_format=None,
-        retain_dropout=False,
-        adaptive=True,
-        retain_history=False,
-        reranking=False,
+            self,
+            tgt_dict,
+            models=None,
+            eos_penalty=0.0,
+            max_iter=10,
+            max_ratio=2,
+            beam_size=1,
+            decoding_format=None,
+            retain_dropout=False,
+            adaptive=True,
+            retain_history=False,
+            reranking=False,
+            args=None
     ):
         """
         Generates translations based on iterative refinement.
@@ -64,14 +66,69 @@ class IterativeRefinementGenerator(object):
         self.adaptive = adaptive
         self.models = models
 
+        self.args = args
+
+        if args is not None:
+            self.use_reference_length = getattr(args, 'use_reference_length', False)
+            self.use_reference_mask = getattr(args, "use_reference_mask", False)
+            self.use_reference_probability = getattr(args, "use_reference_probability", False)
+            self.use_reference_probability_max = getattr(args, "use_reference_probability_max", 0.0)
+            self.use_reference_probability_min = getattr(args, "use_reference_probability_min", 0.0)
+            self.use_baseline_mask = getattr(args, "use_baseline_mask", False)
+            self.use_block_mask_size = getattr(args, "use_block_mask_size", 0)
+            self.use_block_mask_method = getattr(args, "use_block_mask_method", "none")
+            self.use_dependency_tree = getattr(args, "use_dependency_tree", False)
+            self.use_comma_mask = getattr(args, "use_comma_mask", False)
+            self.test_dependency_tree_path = getattr(args, "test_dependency_tree_path", None)
+            self.dependency_modify_root = getattr(args, "dependency_modify_root", False)
+            self.use_mask_predictor = getattr(args, "use_mask_predictor", False)
+            self.random_modify_token = getattr(args, "random_modify_token", False)
+            if hasattr(self.args, "gen_subset"):
+                if self.args.gen_subset == "valid":
+                    dependency_tree_path = "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency.valid.log"
+                elif self.args.gen_subset == "test":
+                    dependency_tree_path = "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency.test.log"
+            else:
+                dependency_tree_path = None
+
+        self.tgt_dict = tgt_dict
+
+        if self.use_reference_probability:
+            diff = self.use_reference_probability_max - self.use_reference_probability_min
+            self.use_reference_step = diff / max_iter
+
+        if self.use_dependency_tree:
+            # 读取文件
+            from fairseq.util2 import load_dependency_tree
+            self.dependency_dataset = load_dependency_tree(dependency_tree_path)
+
+        self.comma_mask_list = None
+        if self.use_comma_mask:
+            # 暂时就是读取文件
+            self.comma_mask_list = load_dependency_tree("/home/data_ti5_c/wangdq/model/tree/max_dependency.log")
+
+        self.args = args
+
+        # biaffine
+        self.biaffine_tree = None
+        if getattr(args, "compute_dep_accuracy", False):
+            print(args.gen_subset)
+            if args.gen_subset == "valid":
+                dep_path = "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin2/dependency_head.valid.log"
+            else:
+                dep_path = "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin2/dependency_head.test.log"
+            self.biaffine_tree = load_dependency_head_tree(dependency_tree_path=dep_path, add_one=True)
+
+        self.compute_accuracy = getattr(args, "compute_dep_accuracy", False)
+
     def generate_batched_itr(
-        self,
-        data_itr,
-        maxlen_a=None,
-        maxlen_b=None,
-        cuda=False,
-        timer=None,
-        prefix_size=0,
+            self,
+            data_itr,
+            maxlen_a=None,
+            maxlen_b=None,
+            cuda=False,
+            timer=None,
+            prefix_size=0,
     ):
         """Iterate over a batched dataset and yield individual translations.
 
@@ -103,10 +160,8 @@ class IterativeRefinementGenerator(object):
                 ref = utils.strip_pad(sample["target"][i, :], self.pad)
                 yield id, src, ref, hypos[i]
 
-
     @torch.no_grad()
     def generate(self, models, sample, prefix_tokens=None):
-
         # TODO: iterative refinement generator does not support ensemble for now.
         if not self.retain_dropout:
             for model in models:
@@ -124,14 +179,20 @@ class IterativeRefinementGenerator(object):
             assert model.allow_ensemble, "{} does not support ensembling".format(model.__class__.__name__)
             model.enable_ensemble(models)
 
-        # TODO: better encoder inputs?
         src_tokens = sample["net_input"]["src_tokens"]
         src_lengths = sample["net_input"]["src_lengths"]
+        references = sample["target"]
+
         bsz, src_len = src_tokens.size()
 
         # initialize
         encoder_out = model.forward_encoder([src_tokens, src_lengths])
-        prev_decoder_out = model.initialize_output_tokens(encoder_out, src_tokens)
+
+        if self.use_reference_length:
+            target = references
+        else:
+            target = None
+        prev_decoder_out = model.initialize_output_tokens(encoder_out, src_tokens, target)
 
         if self.beam_size > 1:
             assert model.allow_length_beam, \
@@ -185,12 +246,54 @@ class IterativeRefinementGenerator(object):
                 "alignment": alignment,
             }
 
+        # 依存分析树
+        dependency_list = []
+        if self.use_dependency_tree:
+            assert self.dependency_dataset is not None
+            dependency_list = [self.dependency_dataset[id] for id in sample["id"].cpu().tolist()]
+
+        # comma mask
+        # comma_mask_list = []
+        # if self.use_comma_mask:
+        #     assert self.comma_mask_list is not None
+        #     comma_mask_list = [self.comma_mask_list[id] for id in sample['id']]
+
+        biaffine_tree = None
+        if self.biaffine_tree:
+            tree = [[0] + self.biaffine_tree[id] + [0] for id in
+                    sample['id'].cpu().tolist()]  # eos和bos都不计算loss,使用mask进行控制
+            head_label = collate_tokens_list(tree, pad_idx=self.pad)
+            biaffine_tree = torch.from_numpy(head_label).long().cuda()
+
         for step in range(self.max_iter + 1):
 
+            # reference_probability = 0.0
+            # if self.use_reference_probability:
+            #     reference_probability = self.use_reference_probability_min + self.use_reference_step * step
+
+            #
+            compute_accuracy = getattr(self.args, 'accuracy', False)
             decoder_options = {
                 "eos_penalty": self.eos_penalty,
                 "max_ratio": self.max_ratio,
                 "decoding_format": self.decoding_format,
+                "references": references,
+                "use_reference_mask": self.use_reference_mask,
+                # "reference_probability": reference_probability,
+                "use_baseline_mask": self.use_baseline_mask,
+                # "use_block_mask_size": self.use_block_mask_size,
+                # "use_block_mask_method": self.use_block_mask_method,
+                "dependency_tree": dependency_list,
+                # "use_comma_mask": self.use_comma_mask,
+                # "comma_mask_list": comma_mask_list,
+                "dependency_modify_root": self.dependency_modify_root,
+                "use_mask_predictor": self.use_mask_predictor,
+                "src_tokens": src_tokens,
+                "accuracy": compute_accuracy,
+                "samples": sample,
+                "biaffine_tree": biaffine_tree,
+                "compute_dep_accuracy": self.compute_accuracy,
+                "random_modify_token": self.random_modify_token
             }
             prev_decoder_out = prev_decoder_out._replace(
                 step=step,
@@ -266,6 +369,7 @@ class IterativeRefinementGenerator(object):
                 if decoder_out.history is not None
                 else None,
             )
+            references = references[not_terminated]
             encoder_out = model.encoder.reorder_encoder_out(encoder_out, not_terminated.nonzero().squeeze())
             sent_idxs = sent_idxs[not_terminated]
             prev_output_tokens = prev_decoder_out.output_tokens.clone()
@@ -280,8 +384,8 @@ class IterativeRefinementGenerator(object):
             finalized = [
                 finalized[np.argmax(
                     [finalized[self.beam_size * i + j][0]['score'] for j in range(self.beam_size)]
-                    ) + self.beam_size * i] for i in range(len(finalized) // self.beam_size)
-                ]
+                ) + self.beam_size * i] for i in range(len(finalized) // self.beam_size)
+            ]
 
         return finalized
 

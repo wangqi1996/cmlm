@@ -9,17 +9,17 @@ Translate pre-processed data with a trained model.
 
 import logging
 import math
+import numpy as np
 import os
 import sys
-
-import numpy as np
-
 import torch
 
 from fairseq import bleu, checkpoint_utils, options, tasks, utils
+from fairseq.data import encoders
 from fairseq.logging import progress_bar
 from fairseq.logging.meters import StopwatchMeter, TimeMeter
-from fairseq.data import encoders
+from fairseq.util2 import init_global_count_tokens, get_step_value, get_probability, compute_kl, get_value1, get_value2, \
+    get_diff_tokens, get_all_tokens
 
 
 def main(args):
@@ -85,6 +85,7 @@ def _main(args, output_file):
         arg_overrides=eval(args.model_overrides),
         task=task,
         suffix=getattr(args, "checkpoint_suffix", ""),
+        strict=False
     )
 
     # Optimize ensemble for generation
@@ -144,6 +145,8 @@ def _main(args, output_file):
     num_sentences = 0
     has_target = True
     wps_meter = TimeMeter()
+
+    init_global_count_tokens()
     for sample in progress:
         sample = utils.move_to_cuda(sample) if use_cuda else sample
         if 'net_input' not in sample:
@@ -257,15 +260,77 @@ def _main(args, output_file):
         progress.log({'wps': round(wps_meter.avg)})
         num_sentences += sample['nsentences']
 
+    # # 准确率
+    # p1 = get_diff_tokens() / get_value1()
+    # # 召回率
+    # p2 = get_diff_tokens() / get_all_tokens()
+    # # F1
+    # p3 = 2 * (p1 * p2) / (p1 + p2)
+    # print("准确率： ", p1)
+    # print("召回率： ", p2)
+    # print("F1: ", p3)
+    # if args.accuracy:
+    #     print(get_diff_tokens())
+    #     print(get_all_tokens())
+    print(get_value1())
+    print(get_value2())
+    print(get_diff_tokens())
+    print(get_all_tokens())
+    # print(get_value3())
+    # print(get_step_value())
+    #
+    # # 按照词频打印
+    # t = {}
+    # step_value = get_step_value()[0]
+    # for word, count in step_value.items():
+    #     if count < 10:
+    #         continue
+    #     word_str = tgt_dict[word]
+    #     t[word_str] = count
+    # print(t)
+
+    # 计算一下熵
+    #
+
+    if args.accuracy:
+        # 分n段计算
+        indexs = [4, 86, 967, 8791, -1]
+        # 10000, 1000, 100,
+        predict = get_step_value()[0]
+        for index in range(len(indexs)):
+            if index == len(indexs) - 1:
+                break
+
+            start = indexs[index]
+            end = indexs[index + 1]
+            freq_p = get_probability(tgt_dict.count[start: end], log_x=False)
+
+            predict_p = []
+            for i in range(start, start + len(freq_p)):  # 去掉特殊的token
+                if i in predict:
+                    predict_p.append(predict[i])
+                else:
+                    predict_p.append(1)
+            predict_p = get_probability(predict_p, log_x=False)
+            predict_p = torch.tensor(predict_p).float().cuda()
+            freq_p = torch.tensor(freq_p).float().cuda()
+
+            print(compute_kl(predict_p, freq_p))
+        # print(compute_kl(freq_p[4:], predict_p))
+
+    # print(get_value3())
     logger.info('NOTE: hypothesis and token scores are output in base 2')
     logger.info('Translated {} sentences ({} tokens) in {:.1f}s ({:.2f} sentences/s, {:.2f} tokens/s)'.format(
         num_sentences, gen_timer.n, gen_timer.sum, num_sentences / gen_timer.sum, 1. / gen_timer.avg))
     if has_target:
         if args.bpe and not args.sacrebleu:
             if args.remove_bpe:
-                logger.warning("BLEU score is being computed by splitting detokenized string on spaces, this is probably not what you want. Use --sacrebleu for standard 13a BLEU tokenization")
+                logger.warning(
+                    "BLEU score is being computed by splitting detokenized string on spaces, this is probably not what you want. Use --sacrebleu for standard 13a BLEU tokenization")
             else:
-                logger.warning("If you are using BPE on the target side, the BLEU score is computed on BPE tokens, not on proper words.  Use --sacrebleu for standard 13a BLEU tokenization")
+                logger.warning(
+                    "If you are using BPE on the target side, the BLEU score is computed on BPE tokens, not on proper words.  Use --sacrebleu for standard 13a BLEU tokenization")
+
         logger.info('Generate {} with beam={}: {}'.format(args.gen_subset, args.beam, scorer.result_string()))
 
     return scorer

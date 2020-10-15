@@ -9,13 +9,12 @@ import torch.nn.functional as F
 from fairseq import utils
 from fairseq.iterative_refinement_generator import DecoderOut
 from fairseq.models import register_model, register_model_architecture
-from fairseq.models.transformer import Embedding
-
 from fairseq.models.nat import (
     FairseqNATModel,
     FairseqNATDecoder,
     ensemble_decoder
 )
+from fairseq.models.transformer import Embedding
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 
 
@@ -27,7 +26,7 @@ def _mean_pooling(enc_feats, src_masks):
     else:
         src_masks = (~src_masks).transpose(0, 1).type_as(enc_feats)
         enc_feats = (
-            (enc_feats / src_masks.sum(0)[None, :, None]) * src_masks[:, :, None]
+                (enc_feats / src_masks.sum(0)[None, :, None]) * src_masks[:, :, None]
         ).sum(0)
     return enc_feats
 
@@ -75,10 +74,10 @@ class NATransformerModel(FairseqNATModel):
         return decoder
 
     def forward(
-        self, src_tokens, src_lengths, prev_output_tokens, tgt_tokens, **kwargs
+            self, src_tokens, src_lengths, prev_output_tokens, tgt_tokens, step=0, **kwargs
     ):
         # encoding
-        encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
+        encoder_out = self.encoder(src_tokens, src_lengths=src_lengths)
 
         # length prediction
         length_out = self.decoder.forward_length(normalize=False, encoder_out=encoder_out)
@@ -88,7 +87,8 @@ class NATransformerModel(FairseqNATModel):
         word_ins_out = self.decoder(
             normalize=False,
             prev_output_tokens=prev_output_tokens,
-            encoder_out=encoder_out)
+            encoder_out=encoder_out,
+            step=step)
 
         return {
             "word_ins": {
@@ -129,12 +129,16 @@ class NATransformerModel(FairseqNATModel):
             history=history
         )
 
-    def initialize_output_tokens(self, encoder_out, src_tokens):
+    def initialize_output_tokens(self, encoder_out, src_tokens, target=None):
         # length prediction
-        length_tgt = self.decoder.forward_length_prediction(
-            self.decoder.forward_length(normalize=True, encoder_out=encoder_out),
-            encoder_out=encoder_out
-        )
+        if target is None:
+            length_tgt = self.decoder.forward_length_prediction(
+                self.decoder.forward_length(normalize=True, encoder_out=encoder_out),
+                encoder_out=encoder_out
+            )
+        else:
+            # use reference length
+            length_tgt = (target != 1).sum(-1)
 
         max_length = length_tgt.clamp_(min=2).max()
         idx_length = utils.new_arange(src_tokens, max_length)
@@ -207,13 +211,27 @@ class NATransformerDecoder(FairseqNATDecoder):
 
     @ensemble_decoder
     def forward(self, normalize, encoder_out, prev_output_tokens, step=0, **unused):
-        features, _ = self.extract_features(
+        prev_target_embedding = None
+        if "prev_target_embedding" in unused:
+            prev_target_embedding = unused['prev_target_embedding']
+
+        src_embedding_copy = self.src_embedding_copy
+        if "src_embedding_copy" in unused:
+            src_embedding_copy = unused['src_embedding_copy']
+
+        features, _, input_embedding = self.extract_features(
             prev_output_tokens,
             encoder_out=encoder_out,
-            embedding_copy=(step == 0) & self.src_embedding_copy,
+            embedding_copy=(step == 0) & src_embedding_copy,
+            prev_target_embedding=prev_target_embedding,
         )
         decoder_out = self.output_layer(features)
-        return F.log_softmax(decoder_out, -1) if normalize else decoder_out
+        if unused.get("return_decoder_output", False):
+            return F.log_softmax(decoder_out, -1) if normalize else decoder_out, features
+        if unused.get("return_input", False):
+            return F.log_softmax(decoder_out, -1) if normalize else decoder_out, input
+        else:
+            return F.log_softmax(decoder_out, -1) if normalize else decoder_out
 
     @ensemble_decoder
     def forward_length(self, normalize, encoder_out):
@@ -226,12 +244,12 @@ class NATransformerDecoder(FairseqNATDecoder):
         return F.log_softmax(length_out, -1) if normalize else length_out
 
     def extract_features(
-        self,
-        prev_output_tokens,
-        encoder_out=None,
-        early_exit=None,
-        embedding_copy=False,
-        **unused
+            self,
+            prev_output_tokens,
+            encoder_out=None,
+            early_exit=None,
+            embedding_copy=False,
+            **unused
     ):
         """
         Similar to *forward* but only return features.
@@ -263,10 +281,14 @@ class NATransformerDecoder(FairseqNATDecoder):
                 ),
             )
 
+        elif "prev_target_embedding" in unused and unused['prev_target_embedding'] is not None:
+            x = unused['prev_target_embedding']
+            decoder_padding_mask = prev_output_tokens.eq(self.padding_idx)
         else:
 
             x, decoder_padding_mask = self.forward_embedding(prev_output_tokens)
 
+        input_embedding = x
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
         attn = None
@@ -297,7 +319,7 @@ class NATransformerDecoder(FairseqNATDecoder):
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
 
-        return x, {"attn": attn, "inner_states": inner_states}
+        return x, {"attn": attn, "inner_states": inner_states}, input_embedding
 
     def forward_embedding(self, prev_output_tokens, states=None):
         # embed positions
