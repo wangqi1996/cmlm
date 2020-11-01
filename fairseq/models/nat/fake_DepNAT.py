@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from fairseq.models.nat import CMLMNATransformerModel, register_model, cmlm_base_architecture, \
     register_model_architecture
-from fairseq.models.nat.fake_latent import get_posterior
+from fairseq.models.nat.fake_latent import get_posterior, get_prior
 from fairseq.util2 import get_base_mask, get_reference_mask
 
 
@@ -23,20 +23,21 @@ class FakeDepNAT(CMLMNATransformerModel):
         # self.use_mask_predictor = self.predictor_loss in self.loss_function
 
         arch = args.latent_arch
-        # self.prior = get_prior(arch, args, self.pad)
+        self.prior = get_prior(arch, args, self.pad)
         self.posterior = get_posterior(arch, args, self.pad)
 
-    # def get_loss(self, prior_out, posterior_out, base_mask):
-    #     """ logits"""
-    #     prior_out = prior_out.log_softmax(dim=-1)
-    #     posterior_out = posterior_out.softmax(dim=-1)
-    #
-    #     loss = F.kl_div(prior_out, posterior_out, reduction='none')
-    #     loss = loss.sum(-1)
-    #
-    #     useful_loss = loss[base_mask]
-    #     useful_loss = useful_loss.mean()
-    #     return useful_loss
+    def get_loss(self, prior_out, posterior_out, base_mask):
+        """ logits"""
+        prior_out = prior_out.log_softmax(dim=-1)
+        posterior_out = posterior_out.softmax(dim=-1)
+
+        loss = F.kl_div(prior_out, posterior_out, reduction='none')
+        loss = loss.sum(-1)
+
+        useful_loss = loss[base_mask]
+        useful_loss = useful_loss.mean()
+        return useful_loss
+
     #
     # def froze_prior(self, froze=True):
     #     if froze:
@@ -107,33 +108,34 @@ class FakeDepNAT(CMLMNATransformerModel):
 
             # prior
             encoder_out = loss['train_need']['encoder_out']
-            # prior_out = self.prior(src_embed=src_embed, src_token=src_tokens, trg_prev_embed=tgt_embed,
-            #                        trg_token=predict_word, encoder_out=encoder_out)
+            prior_out = self.prior(src_embed=src_embed, src_token=src_tokens, trg_prev_embed=tgt_embed,
+                                   trg_token=predict_word, encoder_out=encoder_out)
             # posterior
             posterior_out = self.posterior(src_embed=src_embed, src_token=src_tokens, trg_prev_embed=tgt_embed,
                                            trg_token=predict_word, reference_embed=reference_embed,
                                            reference_token=reference, encoder_out=encoder_out)
 
             # sample multiple
-            # prior_sample = F.gumbel_softmax(prior_out, hard=True, tau=1)  # index=0表示mask
+            prior_sample = F.gumbel_softmax(prior_out, hard=True, tau=1)  # index=0表示mask
             posterior_sample = F.gumbel_softmax(posterior_out, hard=True, tau=1)
 
             # KL loss
             # base_mask = get_base_mask(reference)
-            # kl_loss = self.get_loss(prior_out, posterior_out.detach(), base_mask)
+            kl_loss = self.get_loss(prior_out, posterior_out.detach(), base_mask)
 
             # posterior loss --> reference_mask
             if self.args.posterior_loss:
                 reference_mask = ~get_reference_mask(reference, predicted=predict_word)  # True表示mask
 
                 loss.update({
-                    # "latent": {
-                    #     "loss": kl_loss
-                    # },
+                    "latent": {
+                        "loss": kl_loss
+                    },
                     "train_need": {
-                        "prior_sample": posterior_sample,  # prior_sample
+                        "prior_sample": prior_sample,  # prior_sample
                         "posterior_sample": posterior_sample,
                         "predict_word": predict_word,
+                        "factor": 0.5
                     },
                     "posterior": {
                         "out": posterior_out,
@@ -150,7 +152,7 @@ class FakeDepNAT(CMLMNATransformerModel):
                     #     "loss": kl_loss
                     # },
                     "train_need": {
-                        "prior_sample": posterior_sample,  # prior_sample
+                        "prior_sample": prior_sample,  # prior_sample
                         "posterior_sample": posterior_sample,
                         "predict_word": predict_word,
                     }
@@ -210,10 +212,16 @@ class FakeDepNAT(CMLMNATransformerModel):
             #                        trg_token=output_tokens, encoder_out=encoder_out)
 
             reference_embed, _ = self.decoder.forward_embedding(reference, states=None)
-            posterior_out = self.posterior(src_embed=src_embed, src_token=src_tokens, trg_prev_embed=tgt_embed,
-                                           trg_token=output_tokens, reference_embed=reference_embed,
-                                           reference_token=reference)
-            prior_out = posterior_out
+
+            if kwargs['use_posterior']:
+                posterior_out = self.posterior(src_embed=src_embed, src_token=src_tokens, trg_prev_embed=tgt_embed,
+                                               trg_token=output_tokens, reference_embed=reference_embed,
+                                               reference_token=reference)
+                prior_out = posterior_out
+            else:
+                prior_out = self.prior(src_embed=src_embed, src_token=src_tokens, trg_prev_embed=tgt_embed,
+                                       trg_token=output_tokens, encoder_out=encoder_out)
+
             #
             prior_sample = F.gumbel_softmax(prior_out, hard=True, tau=1)
 

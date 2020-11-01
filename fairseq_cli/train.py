@@ -208,6 +208,13 @@ def train(args, trainer, task, epoch_itr):
     valid_subsets = args.valid_subset.split(",")
     should_stop = False
     num_updates = trainer.get_num_updates()
+
+    # 仅仅eval loss
+    if args.only_eval_loss:
+        valid_losses = validate(args, trainer, task, epoch_itr, valid_subsets)
+        print(valid_losses)
+        exit(0)
+
     for i, samples in enumerate(progress):
         with metrics.aggregate("train_inner"), torch.autograd.profiler.record_function(
                 "train_step-%d" % i

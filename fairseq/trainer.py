@@ -9,12 +9,12 @@ Train a network across multiple GPUs.
 
 import contextlib
 import logging
-import sys
-import time
-from itertools import chain
 from typing import Any, Dict, List
 
+import sys
+import time
 import torch
+from itertools import chain
 
 from fairseq import checkpoint_utils, distributed_utils, models, optim, utils
 from fairseq.file_io import PathManager

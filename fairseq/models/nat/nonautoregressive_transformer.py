@@ -110,24 +110,42 @@ class NATransformerModel(FairseqNATModel):
 
         # execute the decoder
         output_masks = output_tokens.ne(self.pad)
-        _scores, _tokens = self.decoder(
-            normalize=True,
-            prev_output_tokens=output_tokens,
-            encoder_out=encoder_out,
-            step=step,
-        ).max(-1)
+
+        if kwargs.get('return_decoder_output', False):
+            logits, _decoder_out = self.decoder(
+                normalize=True,
+                prev_output_tokens=output_tokens,
+                encoder_out=encoder_out,
+                step=step,
+                **kwargs
+            )
+            hidden_state = _decoder_out['return_decoder_output']
+        else:
+            logits = self.decoder(
+                normalize=True,
+                prev_output_tokens=output_tokens,
+                encoder_out=encoder_out,
+                step=step,
+                **kwargs
+            )
+
+        _scores, _tokens = logits.max(-1)
 
         output_tokens.masked_scatter_(output_masks, _tokens[output_masks])
         output_scores.masked_scatter_(output_masks, _scores[output_masks])
         if history is not None:
             history.append(output_tokens.clone())
 
-        return decoder_out._replace(
+        d = decoder_out._replace(
             output_tokens=output_tokens,
             output_scores=output_scores,
             attn=None,
             history=history
         )
+        if kwargs.get('return_decoder_output', False):
+            return d, hidden_state
+        else:
+            return d
 
     def initialize_output_tokens(self, encoder_out, src_tokens, target=None):
         # length prediction
@@ -226,10 +244,13 @@ class NATransformerDecoder(FairseqNATDecoder):
             prev_target_embedding=prev_target_embedding,
         )
         decoder_out = self.output_layer(features)
-        if unused.get("return_decoder_output", False):
-            return F.log_softmax(decoder_out, -1) if normalize else decoder_out, features
-        if unused.get("return_input", False):
-            return F.log_softmax(decoder_out, -1) if normalize else decoder_out, input
+        _decoder_out = {}
+        if unused.get('return_decoder_output', False):
+            _decoder_out['return_decoder_output'] = features
+        if unused.get('return_input', False):
+            _decoder_out['return_input'] = input_embedding
+        if len(_decoder_out) > 0:
+            return F.log_softmax(decoder_out, -1) if normalize else decoder_out, _decoder_out
         else:
             return F.log_softmax(decoder_out, -1) if normalize else decoder_out
 
@@ -242,6 +263,24 @@ class NATransformerDecoder(FairseqNATDecoder):
             enc_feats = enc_feats.detach()
         length_out = F.linear(enc_feats, self.embed_length.weight)
         return F.log_softmax(length_out, -1) if normalize else length_out
+
+    def get_copy_embedding(self, encoder_out, prev_output_tokens):
+        src_embd = encoder_out.encoder_embedding
+        src_mask = encoder_out.encoder_padding_mask
+        src_mask = (
+            ~src_mask
+            if src_mask is not None
+            else prev_output_tokens.new_ones(*src_embd.size()[:2]).bool()
+        )
+
+        x, decoder_padding_mask = self.forward_embedding(
+            prev_output_tokens,
+            self.forward_copying_source(
+                src_embd, src_mask, prev_output_tokens.ne(self.padding_idx)
+            ),
+        )
+
+        return x, decoder_padding_mask
 
     def extract_features(
             self,
@@ -266,20 +305,7 @@ class NATransformerDecoder(FairseqNATDecoder):
         """
         # embedding
         if embedding_copy:
-            src_embd = encoder_out.encoder_embedding
-            src_mask = encoder_out.encoder_padding_mask
-            src_mask = (
-                ~src_mask
-                if src_mask is not None
-                else prev_output_tokens.new_ones(*src_embd.size()[:2]).bool()
-            )
-
-            x, decoder_padding_mask = self.forward_embedding(
-                prev_output_tokens,
-                self.forward_copying_source(
-                    src_embd, src_mask, prev_output_tokens.ne(self.padding_idx)
-                ),
-            )
+            x, decoder_padding_mask = self.get_copy_embedding(encoder_out, prev_output_tokens)
 
         elif "prev_target_embedding" in unused and unused['prev_target_embedding'] is not None:
             x = unused['prev_target_embedding']

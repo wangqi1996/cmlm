@@ -9,6 +9,105 @@ from fairseq.models.nat import CMLMNATransformerModel, cmlm_base_architecture
 from fairseq.util2 import load_dependency_head_tree, get_base_mask, set_value1, set_value2
 
 
+class BiaffineAttentionDependency(nn.Module):
+    def __init__(self, args, input_dim, contain_lstm=False, padding_idx=0):
+
+        super().__init__()
+
+        self.mlp_dim = 500
+        self.args = args
+        self.pad = padding_idx
+        mlp_input_dim = input_dim
+        if contain_lstm:
+            mlp_input_dim = 300
+
+        self.arc_head_mlp = nn.Sequential(
+            nn.Linear(mlp_input_dim, self.mlp_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(0.33))
+
+        self.arc_dep_mlp = nn.Sequential(
+            nn.Linear(mlp_input_dim, self.mlp_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(0.33))
+
+        self.W_arc = nn.Parameter(orthogonal_(
+            torch.empty(self.mlp_dim + 1, self.mlp_dim).cuda()
+        ), requires_grad=True)
+
+        self.input_mapping_pai = 0.3  # 暂时不用这个参数
+
+        # 获取依存树用作计算损失
+        self.train_dependency_tree_head = load_dependency_head_tree(
+            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency_head.train.log",
+            add_one=True)
+        self.valid_dependency_tree_head = load_dependency_head_tree(
+            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency_head.valid.log",
+            add_one=True)
+
+        self.contain_lstm = contain_lstm
+
+        if contain_lstm:
+            self.LSTM = nn.GRU(input_size=input_dim, hidden_size=300, num_layers=1, bias=True,
+                               batch_first=True)
+
+    def get_dep_reference(self, sample_ids):
+        if self.training:
+            tree = self.train_dependency_tree_head
+        else:
+            tree = self.valid_dependency_tree_head
+
+        tree = [[0] + tree[id] + [0] for id in sample_ids]  # 特殊处理bos和eos
+        head_label = collate_tokens_list(tree, pad_idx=self.pad)
+        head_label = torch.from_numpy(head_label).long().cuda()
+
+        return head_label
+
+    def forward(self, hidden_state, reference):
+
+        reference_mask = reference != self.pad
+        length = reference_mask.long().sum(-1)
+
+        if self.contain_lstm:
+            unpaded_reference = nn.utils.rnn.pack_padded_sequence(hidden_state, lengths=length,
+                                                                  batch_first=True, enforce_sorted=False)
+            decoder_input, _ = self.LSTM(unpaded_reference)
+            decoder_input, _ = nn.utils.rnn.pad_packed_sequence(decoder_input, batch_first=True, padding_value=self.pad)
+        else:
+            decoder_input = hidden_state
+
+        h_arc_dep = self.arc_dep_mlp(decoder_input)  # batch * max_trg * mlp_dim
+        h_arc_head = self.arc_head_mlp(decoder_input)  # batch * max_trg * mlp_dim
+
+        batch_size, max_trg_len, decoder_dim = h_arc_head.size()
+
+        arc_dep = torch.cat((h_arc_dep, torch.ones(batch_size, max_trg_len, 1).cuda()),
+                            dim=-1)  # batch * trg_len * (dim+1)
+
+        head_dep_result = arc_dep.matmul(self.W_arc).matmul(h_arc_head.transpose(1, 2))  # batch * trg_len * trg_len
+
+        return head_dep_result
+
+    def compute_accuracy(self, head_dep_result, head_mask, head_dep_reference):
+        pred_head = head_dep_result.argmax(-1)
+
+        output = pred_head[head_mask]
+        ref = head_dep_reference[head_mask]
+
+        all_predict_head, = output.size()
+        correct_predict_head = (ref == output).sum().item()
+
+        return all_predict_head, correct_predict_head
+
+    def compute_accuracy_nosum(self, head_dep_result, head_mask, head_dep_reference):
+        pred_head = head_dep_result.argmax(-1)
+
+        diff = (pred_head != head_dep_reference) & head_mask
+        s = diff.sum(-1)
+
+        return s
+
+
 @register_model("biaffine")
 class BiaffineAttention(CMLMNATransformerModel):
     """
@@ -19,6 +118,7 @@ class BiaffineAttention(CMLMNATransformerModel):
         super().__init__(args, encoder, decoder)
 
         self.mlp_dim = 500
+        self.pad = self.tgt_dict.pad
         self.biaffine_input = args.biaffine_input
         print("biaffine_input: ", self.biaffine_input)
 
@@ -78,14 +178,7 @@ class BiaffineAttention(CMLMNATransformerModel):
 
         super().load_state_dict(state_dict, strict)
 
-    def froze_nmt_model(self):
-        print("froze nmt encoder and decoder")
 
-        for param in self.encoder.parameters():
-            param.requires_grad = False
-
-        for param in self.decoder.parameters():
-            param.requires_grad = False
 
     def get_dep_reference(self, sample_ids):
         if self.training:

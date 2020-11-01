@@ -8,9 +8,10 @@ Translate pre-processed data with a trained model.
 """
 
 import logging
+import os
+
 import math
 import numpy as np
-import os
 import sys
 import torch
 

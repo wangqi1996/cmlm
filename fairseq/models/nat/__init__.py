@@ -9,3 +9,4 @@ from .DepNAT import *
 from .biaffine import *
 from .fake_DepNAT import *
 from .GLAT import *
+from .DEP_GLAT import *

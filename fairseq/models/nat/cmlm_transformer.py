@@ -93,12 +93,14 @@ class CMLMNATransformerModel(NATransformerModel):
         if "prev_target_embedding" in kwargs:
             prev_target_embedding = kwargs['prev_target_embedding']
 
-        word_ins_out, hidden_state = self.decoder(
+        word_ins_out, _decoder_out = self.decoder(
             normalize=False,
             prev_output_tokens=prev_output_tokens,
             encoder_out=encoder_out,
             return_decoder_output=True,
             prev_target_embedding=prev_target_embedding)
+
+        hidden_state = _decoder_out['return_decoder_output']
         word_ins_mask = prev_output_tokens.eq(self.unk)
 
         freq_weights = None

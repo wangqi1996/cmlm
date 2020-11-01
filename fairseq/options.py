@@ -281,6 +281,9 @@ def get_parser(desc, default_task="translation"):
 
     parser.add_argument('--froze-nmt-model', action="store_true")
 
+    # layer,  path
+    parser.add_argument('--dep-model', type=str, default="random")
+
     parser.add_argument('--noise-probability', default="none", choices=["none", "increase"])  # 使用递增的p
 
     parser.add_argument('--use-reference-mask',
@@ -309,6 +312,11 @@ def get_parser(desc, default_task="translation"):
 
     parser.add_argument('--posterior-loss', action="store_true")
     parser.add_argument('--posterior-dep-loss', action="store_true")
+
+    # dependency
+    parser.add_argument('--only-joint-training', action="store_true")
+    parser.add_argument('--joint-training', action="store_true")
+    parser.add_argument('--only-eval-loss', action="store_true")
 
     from fairseq.registry import REGISTRIES
     for registry_name, REGISTRY in REGISTRIES.items():
@@ -699,6 +707,7 @@ def add_generation_args(parser):
                         help='if the ground truth probability great than .., it not be masked')
 
     parser.add_argument('--compute-dep-accuracy', action="store_true")
+    parser.add_argument('--use-posterior', action="store_true")
 
     # use-reference-mask 和  use-reference-probability 可以叠加使用
 

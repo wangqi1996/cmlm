@@ -91,6 +91,8 @@ class IterativeRefinementGenerator(object):
             else:
                 dependency_tree_path = None
 
+            self.use_posterior = getattr(args, "use_posterior", False)
+
         self.tgt_dict = tgt_dict
 
         if self.use_reference_probability:
@@ -114,9 +116,9 @@ class IterativeRefinementGenerator(object):
         if getattr(args, "compute_dep_accuracy", False):
             print(args.gen_subset)
             if args.gen_subset == "valid":
-                dep_path = "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin2/dependency_head.valid.log"
+                dep_path = "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency_head.valid.log"
             else:
-                dep_path = "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin2/dependency_head.test.log"
+                dep_path = "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency_head.test.log"
             self.biaffine_tree = load_dependency_head_tree(dependency_tree_path=dep_path, add_one=True)
 
         self.compute_accuracy = getattr(args, "compute_dep_accuracy", False)
@@ -293,7 +295,8 @@ class IterativeRefinementGenerator(object):
                 "samples": sample,
                 "biaffine_tree": biaffine_tree,
                 "compute_dep_accuracy": self.compute_accuracy,
-                "random_modify_token": self.random_modify_token
+                "random_modify_token": self.random_modify_token,
+                "use_posterior": self.use_posterior
             }
             prev_decoder_out = prev_decoder_out._replace(
                 step=step,

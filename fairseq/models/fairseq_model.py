@@ -12,12 +12,12 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
+
 from fairseq import utils
 from fairseq.checkpoint_utils import prune_state_dict
 from fairseq.data import Dictionary
 from fairseq.models import FairseqDecoder, FairseqEncoder
-from torch import Tensor
-
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +44,10 @@ class BaseFairseqModel(nn.Module):
         return sample["target"]
 
     def get_normalized_probs(
-        self,
-        net_output: Tuple[Tensor, Optional[Dict[str, List[Optional[Tensor]]]]],
-        log_probs: bool,
-        sample: Optional[Dict[str, Tensor]] = None,
+            self,
+            net_output: Tuple[Tensor, Optional[Dict[str, List[Optional[Tensor]]]]],
+            log_probs: bool,
+            sample: Optional[Dict[str, Tensor]] = None,
     ):
         """Get normalized probabilities (or log probs) from a net's output."""
         return self.get_normalized_probs_scriptable(net_output, log_probs, sample)
@@ -57,10 +57,10 @@ class BaseFairseqModel(nn.Module):
     # Current workaround is to add a helper function with different name and
     # call the helper function from scriptable Subclass.
     def get_normalized_probs_scriptable(
-        self,
-        net_output: Tuple[Tensor, Optional[Dict[str, List[Optional[Tensor]]]]],
-        log_probs: bool,
-        sample: Optional[Dict[str, Tensor]] = None,
+            self,
+            net_output: Tuple[Tensor, Optional[Dict[str, List[Optional[Tensor]]]]],
+            log_probs: bool,
+            sample: Optional[Dict[str, Tensor]] = None,
     ):
         """Scriptable helper function for get_normalized_probs in ~BaseFairseqModel"""
         if hasattr(self, "decoder"):
@@ -125,6 +125,7 @@ class BaseFairseqModel(nn.Module):
         def _apply(m):
             if hasattr(m, 'set_num_updates') and m != self:
                 m.set_num_updates(num_updates)
+
         self.apply(_apply)
 
     def prepare_for_inference_(self, args):
@@ -167,11 +168,11 @@ class BaseFairseqModel(nn.Module):
             base_func = BaseFairseqModel.make_generation_fast_
             for n, m in module.named_modules():
                 if (
-                    m != self
-                    and hasattr(m, "make_generation_fast_")
-                    # don't call this implementation again, e.g., if
-                    # children modules also inherit from BaseFairseqModel
-                    and m.make_generation_fast_.__func__ is not base_func
+                        m != self
+                        and hasattr(m, "make_generation_fast_")
+                        # don't call this implementation again, e.g., if
+                        # children modules also inherit from BaseFairseqModel
+                        and m.make_generation_fast_.__func__ is not base_func
                 ):
                     name = prefix + n
                     m.make_generation_fast_(name=name, **kwargs)
@@ -192,9 +193,9 @@ class BaseFairseqModel(nn.Module):
 
         def apply_prepare_for_onnx_export_(module):
             if (
-                module != self
-                and hasattr(module, "prepare_for_onnx_export_")
-                and module not in seen
+                    module != self
+                    and hasattr(module, "prepare_for_onnx_export_")
+                    and module not in seen
             ):
                 seen.add(module)
                 module.prepare_for_onnx_export_(**kwargs)
@@ -207,9 +208,9 @@ class BaseFairseqModel(nn.Module):
 
         def apply_prepare_for_tpu_(module):
             if (
-                module != self
-                and hasattr(module, "prepare_for_tpu_")
-                and module not in seen
+                    module != self
+                    and hasattr(module, "prepare_for_tpu_")
+                    and module not in seen
             ):
                 seen.add(module)
                 module.prepare_for_tpu_(**kwargs)
@@ -218,11 +219,11 @@ class BaseFairseqModel(nn.Module):
 
     @classmethod
     def from_pretrained(
-        cls,
-        model_name_or_path,
-        checkpoint_file="model.pt",
-        data_name_or_path=".",
-        **kwargs,
+            cls,
+            model_name_or_path,
+            checkpoint_file="model.pt",
+            data_name_or_path=".",
+            **kwargs,
     ):
         """
         Load a :class:`~fairseq.models.FairseqModel` from a pre-trained model
@@ -368,11 +369,11 @@ class FairseqMultiModel(BaseFairseqModel):
 
     @staticmethod
     def build_shared_embeddings(
-        dicts: Dict[str, Dictionary],
-        langs: List[str],
-        embed_dim: int,
-        build_embedding: callable,
-        pretrained_embed_path: Optional[str] = None,
+            dicts: Dict[str, Dictionary],
+            langs: List[str],
+            embed_dim: int,
+            build_embedding: callable,
+            pretrained_embed_path: Optional[str] = None,
     ):
         """
         Helper function to build shared embeddings for a set of languages after

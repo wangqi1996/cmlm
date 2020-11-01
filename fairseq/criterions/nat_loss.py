@@ -159,7 +159,7 @@ class LabelSmoothedDualImitationCriterion(FairseqCriterion):
             "nsentences": nsentences,
             "sample_size": sample_size,
             "train_need": train_need,
-            "need_print": train_need.get('print', {})
+            "need_print": train_need.get('print', {}) if train_need is not None else {}
         }
 
         for l in losses:

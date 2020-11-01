@@ -2,6 +2,8 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
+import torch
+
 from fairseq.models import register_model_architecture, register_model
 from fairseq.models.nat import NATransformerModel, base_architecture
 from fairseq.util2 import new_arange
@@ -13,6 +15,9 @@ class GLAT(NATransformerModel):
     def hamming_distance(self, reference, predict):
         diff = (reference != predict).sum(-1).detach()
         return diff
+
+    def get_ratio(self, update_num, max_steps):
+        return update_num / max_steps + 0.1
 
     def random_mask(self, target_tokens, mask_num, input):
         """
@@ -37,10 +42,14 @@ class GLAT(NATransformerModel):
         prev_target_tokens = target_tokens.masked_fill(mask, unk)
 
         # cover
-        prev_target_embedding = self.decoder.forward_embedding(prev_target_tokens)
-        prev_target_embedding.masked_scatter_(mask, input[mask])
+        prev_target_embedding, _ = self.decoder.forward_embedding(prev_target_tokens)
 
-        return prev_target_embedding
+        new_embedding = torch.cat((prev_target_embedding.unsqueeze(-1), input.unsqueeze(-1)), dim=-1)
+        mask = mask.unsqueeze(-1).unsqueeze(-1)
+        new_mask = torch.cat((~mask, mask), dim=-1)
+        embedding = (new_embedding * new_mask).sum(-1)
+
+        return embedding, prev_target_tokens
 
     def forward(
             self, src_tokens, src_lengths, prev_output_tokens, tgt_tokens, **kwargs
@@ -53,37 +62,43 @@ class GLAT(NATransformerModel):
         4. hidden state和word embedding混合
         """
         # encoding
-        encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
+        encoder_out = self.encoder(src_tokens, src_lengths=src_lengths)
 
         # length prediction
         length_out = self.decoder.forward_length(normalize=False, encoder_out=encoder_out)
         length_tgt = self.decoder.forward_length_prediction(length_out, encoder_out, tgt_tokens)
 
         # first step decoding  使用embedding copy
-        logits, input_embedding = self.decoder(normalize=False,
-                                               prev_output_tokens=prev_output_tokens,
-                                               encoder_out=encoder_out,
-                                               step=0,
-                                               return_input=True
-                                               ).detach()
+        logits, _decoder_out = self.decoder(normalize=False,
+                                            prev_output_tokens=prev_output_tokens,
+                                            encoder_out=encoder_out,
+                                            step=0,
+                                            return_input=True
+                                            )
+        input_embedding = _decoder_out['return_input']
+        logits = logits.detach()
         score, predict_word = logits.max(-1)
 
         # 计算hamming距离
         reference = kwargs['sample']['target']
-        mask_num = self.hamming_distance(reference=reference, predict=predict_word, )
+        mask_num = self.hamming_distance(reference=reference, predict=predict_word).int()
+        if self.training:
+            mask_num = mask_num * self.get_ratio(update_num=kwargs['update_nums'], max_steps=self.args.max_update)
 
-        prev_output_tokens = self.random_mask(reference, mask_num, input_embedding)
+        prev_target_embedding, prev_output_tokens = self.random_mask(reference, mask_num, input_embedding)
 
         # decoding
         word_ins_out = self.decoder(
             normalize=False,
             prev_output_tokens=prev_output_tokens,
-            encoder_out=encoder_out)
+            encoder_out=encoder_out,
+            prev_target_embedding=prev_target_embedding,
+            step=1)
 
         return {
             "word_ins": {
                 "out": word_ins_out, "tgt": tgt_tokens,
-                "mask": tgt_tokens.ne(self.pad), "ls": self.args.label_smoothing,
+                "mask": prev_output_tokens.eq(self.unk), "ls": self.args.label_smoothing,
                 "nll_loss": True
             },
             "length": {

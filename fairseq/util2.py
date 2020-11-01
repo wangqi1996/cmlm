@@ -194,11 +194,14 @@ def load_dependency_tree(dependency_tree_path, convert=False, add_one=False, sca
     dependency_index = []
     with open(dependency_tree_path, "r") as f:
         for line in f:
-            layers = line.strip().split('\t')
+            layers = line.strip('\n').split('\t')
             dependency_list.append([])
             max_value = 0
             for layer in layers:
 
+                if layer == "":
+                    dependency_list[-1].append([])
+                    continue
                 if add_one:
                     c = [int(i) + 1 for i in layer.split(',')]
                 else:

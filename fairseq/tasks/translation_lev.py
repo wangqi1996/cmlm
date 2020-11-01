@@ -169,13 +169,16 @@ class TranslationLevenshteinTask(TranslationTask):
         model.train()
         noise_probability = self.noise_probability_schedule(update_num)
         sample['prev_target'] = self.inject_noise(sample['target'], noise_probability)
-        loss, sample_size, logging_output = criterion(model, sample)
+        loss, sample_size, logging_output = criterion(model, sample, update_nums=update_num)
         if ignore_grad:
             loss *= 0
         optimizer.backward(loss)
 
         if "train_need" in logging_output:
             logging_output.pop("train_need")
+
+        if "need_print" in logging_output and len(logging_output['need_print']) == 0:
+            logging_output.pop("need_print")
 
         return loss, sample_size, logging_output
 
@@ -215,5 +218,8 @@ class TranslationLevenshteinTask(TranslationTask):
 
         if "train_need" in logging_output:
             logging_output.pop("train_need")
+
+        if "need_print" in logging_output and len(logging_output['need_print']) == 0:
+            logging_output.pop("need_print")
 
         return loss, sample_size, logging_output

@@ -1,5 +1,4 @@
 # encoding=utf-8
-from typing import Any
 
 from torch import nn
 
@@ -149,7 +148,7 @@ class PriorDecoderNN(nn.Module):
     def __init__(self, args, pad):
         super().__init__()
 
-        self.decoder = DecoderLayer(args, num_layers=2, pad=pad)
+        self.decoder = DecoderLayer(args, num_layers=1, pad=pad)
         self.linear = nn.Linear(args.decoder_embed_dim, 2)
 
         self.args = args
@@ -179,7 +178,7 @@ class PosteriorDecoderNN(nn.Module):
         """ trg_mask: pad mask
         暂时把encoder和decoder拼接起来计算
         """
-        # target_out = self.target_encoder(reference_embed, reference_token)
+        target_out = self.target_encoder(reference_embed, reference_token)
         # new_out = EncoderOut(
         #     encoder_out=torch.cat([encoder_out.encoder_out, target_out.encoder_out], dim=0),  # time dim
         #     encoder_padding_mask=torch.cat([encoder_out.encoder_padding_mask, target_out.encoder_padding_mask], dim=-1),
@@ -189,25 +188,22 @@ class PosteriorDecoderNN(nn.Module):
         #     src_lengths=None
         #
         # )
-        reference_mask = reference_token.eq(self.padding_idx)
-        new_out = EncoderOut(
-            encoder_out=reference_embed,
-            encoder_padding_mask=reference_mask,
-            encoder_embedding=None,
-            encoder_states=None,
-            src_tokens=None,
-            src_lengths=None
-        )
+        # reference_mask = reference_token.eq(self.padding_idx)
+        # new_out = EncoderOut(
+        #     encoder_out=reference_embed,
+        #     encoder_padding_mask=reference_mask,
+        #     encoder_embedding=None,
+        #     encoder_states=None,
+        #     src_tokens=None,
+        #     src_lengths=None
+        # )
 
         # 这个还是非自回归地预测目标
-        decoder_out = self.decoder(prev_embed=trg_prev_embed, encoder_out=new_out, target_token=trg_token)
+        decoder_out = self.decoder(prev_embed=trg_prev_embed, encoder_out=target_out, target_token=trg_token)
 
         out = self.linear(decoder_out)
 
         return out
-
-    def _forward_unimplemented(self, *input: Any) -> None:
-        pass
 
 
 class LSTMLayer(nn.Module):
