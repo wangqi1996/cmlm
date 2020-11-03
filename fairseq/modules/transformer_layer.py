@@ -7,11 +7,12 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
+from torch import Tensor
+
 from fairseq import utils
 from fairseq.modules import LayerNorm, MultiheadAttention
-from fairseq.modules.quant_noise import quant_noise
 from fairseq.modules.fairseq_dropout import FairseqDropout
-from torch import Tensor
+from fairseq.modules.quant_noise import quant_noise
 
 
 class TransformerEncoderLayer(nn.Module):
@@ -158,7 +159,7 @@ class TransformerDecoderLayer(nn.Module):
     """
 
     def __init__(
-        self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False
+            self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False
     ):
         super().__init__()
         self.embed_dim = args.decoder_embed_dim
@@ -244,17 +245,17 @@ class TransformerDecoderLayer(nn.Module):
         self.onnx_trace = True
 
     def forward(
-        self,
-        x,
-        encoder_out: Optional[torch.Tensor] = None,
-        encoder_padding_mask: Optional[torch.Tensor] = None,
-        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
-        prev_self_attn_state: Optional[List[torch.Tensor]] = None,
-        prev_attn_state: Optional[List[torch.Tensor]] = None,
-        self_attn_mask: Optional[torch.Tensor] = None,
-        self_attn_padding_mask: Optional[torch.Tensor] = None,
-        need_attn: bool = False,
-        need_head_weights: bool = False,
+            self,
+            x,
+            encoder_out: Optional[torch.Tensor] = None,
+            encoder_padding_mask: Optional[torch.Tensor] = None,
+            incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+            prev_self_attn_state: Optional[List[torch.Tensor]] = None,
+            prev_attn_state: Optional[List[torch.Tensor]] = None,
+            self_attn_mask: Optional[torch.Tensor] = None,
+            self_attn_padding_mask: Optional[torch.Tensor] = None,
+            need_attn: bool = False,
+            need_head_weights: bool = False, **kwargs,
     ):
         """
         Args:
@@ -287,9 +288,9 @@ class TransformerDecoderLayer(nn.Module):
             self.self_attn._set_input_buffer(incremental_state, saved_state)
         _self_attn_input_buffer = self.self_attn._get_input_buffer(incremental_state)
         if self.cross_self_attention and not (
-            incremental_state is not None
-            and _self_attn_input_buffer is not None
-            and "prev_key" in _self_attn_input_buffer
+                incremental_state is not None
+                and _self_attn_input_buffer is not None
+                and "prev_key" in _self_attn_input_buffer
         ):
             if self_attn_mask is not None:
                 assert encoder_out is not None
@@ -318,6 +319,7 @@ class TransformerDecoderLayer(nn.Module):
             incremental_state=incremental_state,
             need_weights=False,
             attn_mask=self_attn_mask,
+            **kwargs
         )
         x = self.dropout_module(x)
         x = residual + x

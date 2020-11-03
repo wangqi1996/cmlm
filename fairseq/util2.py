@@ -187,69 +187,6 @@ def _random_mask(target_tokens, noise_probability=None):
     return prev_target_tokens
 
 
-def load_dependency_tree(dependency_tree_path, convert=False, add_one=False, scale=2):
-    """ convert表示是否弄成损失样式  """
-    dependency_list = []
-
-    dependency_index = []
-    with open(dependency_tree_path, "r") as f:
-        for line in f:
-            layers = line.strip('\n').split('\t')
-            dependency_list.append([])
-            max_value = 0
-            for layer in layers:
-
-                if layer == "":
-                    dependency_list[-1].append([])
-                    continue
-                if add_one:
-                    c = [int(i) + 1 for i in layer.split(',')]
-                else:
-                    c = [int(i) for i in layer.split(',')]
-
-                dependency_list[-1].append(c)
-                if convert:
-                    max_value = max(max_value, max(c))
-
-            if convert:
-                dependency_index.append(convert_tree_to_index(dependency_list[-1], max_value, scale))
-
-    if convert:
-        return dependency_index
-
-    else:
-        return dependency_list
-
-
-def load_dependency_head_tree(dependency_tree_path, convert=False, add_one=False, scale=2):
-    """ convert表示是否弄成损失样式  """
-    dependency_list = []
-
-    with open(dependency_tree_path, "r") as f:
-        for line in f:
-            heads = line.strip().split(',')
-            if add_one:
-                c = [int(i) + 1 for i in heads]  # add one
-            else:
-                c = [int(i) for i in heads]
-
-            dependency_list.append(c)
-
-    return dependency_list
-
-
-def convert_tree_to_index(sentence, max_value, scale):
-    result = [0 for _ in range(max_value + 1)]
-
-    result[0] = 1  # add_one
-    step = 1 / len(sentence)
-    for layer_id, layer in enumerate(sentence):
-        for l in layer:
-            result[l] = scale - step * layer_id * scale + 1
-
-    return result
-
-
 def init_global_count_tokens():
     global DIFF_TOKENS
     DIFF_TOKENS = 0

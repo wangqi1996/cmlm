@@ -5,9 +5,10 @@
 import copy
 import random
 
+from fairseq.dep import load_dependency_tree, load_dependency_head_tree
 from fairseq.models import register_model, register_model_architecture
 from fairseq.models.nat import NATransformerModel, base_architecture, BiaffineAttentionDependency
-from fairseq.util2 import load_dependency_tree, set_value1, set_value2, load_dependency_head_tree
+from fairseq.util2 import set_value1, set_value2, get_base_mask
 
 
 @register_model('DEP_GLAT')
@@ -18,6 +19,8 @@ class DEP_GLAT(NATransformerModel):
 
         self.dep_model = getattr(args, "dep_model", "random")
 
+        self.update_two_decoding = getattr(args, "update_two_decoding", False)
+        print("--update-two-decoder: ", self.update_two_decoding)
         # 加载dependency tree
         if self.dep_model in ['layer']:
             self.train_dependency_tree = load_dependency_tree(
@@ -162,12 +165,6 @@ class DEP_GLAT(NATransformerModel):
             prev_target_token[sentence_index][token_index] = unk
             num += 1
 
-            if len(dependency_heads) <= token_index - 1:
-                print(len(dependency_heads))
-                print(sample_id)
-                print(token_indexs)
-                print(dependency_heads)
-                print(prev_target_token[sentence_index])
             child_indexs = dependency_heads[token_index - 1]
             for child_index in child_indexs:
                 can_mask[child_index] = 0
@@ -338,29 +335,30 @@ class DEP_GLAT(NATransformerModel):
         length_out = self.decoder.forward_length(normalize=False, encoder_out=encoder_out)
         length_tgt = self.decoder.forward_length_prediction(length_out, encoder_out, tgt_tokens)
 
-        # # first step decoding  使用embedding copy
-        # word_ins_out, _decoder_out = self.decoder(normalize=False,
-        #                                           prev_output_tokens=prev_output_tokens,
-        #                                           encoder_out=encoder_out,
-        #                                           step=0,
-        #                                           return_decoder_output=True,
-        #                                           return_input=True,
-        #                                           )
+        # first step decoding  使用embedding copy
+        word_ins_out, _decoder_out = self.decoder(normalize=False,
+                                                  prev_output_tokens=prev_output_tokens,
+                                                  encoder_out=encoder_out,
+                                                  step=0,
+                                                  return_decoder_output=True,
+                                                  return_input=True,
+                                                  )
         samples = kwargs['sample']
-        # hidden_state = _decoder_out['return_decoder_output']
-        # decoder_input = _decoder_out['return_input']
+        hidden_state = _decoder_out['return_decoder_output']
+        decoder_input = _decoder_out['return_input']
         #
-        # head_mask = get_base_mask(tgt_tokens)
+        head_mask = get_base_mask(tgt_tokens)
+
+        hidden_state2 = None
+        head_mask2 = None
         if not self.args.only_joint_training:
-            # hidden_state = hidden_state.detach()
-            #
+
             if self.training:
                 update_nums = kwargs['update_nums']
             else:
                 update_nums = 0
 
-            hidden_state = None
-            decoder_input, decoder_input_mask = self.decoder.get_copy_embedding(encoder_out, prev_output_tokens)
+            # decoder_input, decoder_input_mask = self.decoder.get_copy_embedding(encoder_out, prev_output_tokens)
             prev_target_embedding, prev_output_tokens = self.get_mask_token(hidden_state, samples, decoder_input,
                                                                             update_nums=update_nums,
                                                                             dep_model=self.dep_model)
@@ -374,8 +372,8 @@ class DEP_GLAT(NATransformerModel):
                 return_decoder_output=True,
                 step=1)
 
-            hidden_state = _decoder_out['return_decoder_output']
-            head_mask = prev_output_tokens.eq(self.unk)
+            hidden_state2 = _decoder_out['return_decoder_output']
+            head_mask2 = prev_output_tokens.eq(self.unk)
 
         loss = {
             "word_ins": {
@@ -391,14 +389,21 @@ class DEP_GLAT(NATransformerModel):
         }
 
         # compute the joint training loss
-        if self.args.joint_training:
+        if self.args.joint_training or self.args.only_joint_training:
+            # 如果仅仅更新一次，肯定是更新第二次的decoder
+            # 如果不是仅仅更新一次，则联合训练更新第一次的decoder，nmt训练更新第二次的decoder。
+            if not self.update_two_decoding and hidden_state2 is not None:
+                hidden_state.contiguous().detach_()
+                hidden_state = hidden_state2
+                head_mask = head_mask2
+
             head_dep_predict = self.dependency_model(hidden_state, samples['target'])
             head_dep_reference = self.dependency_model.get_dep_reference(samples['id'].cpu().tolist())
             dep_loss = {
                 "dep_loss": {
                     "out": head_dep_predict,
                     "tgt": head_dep_reference,
-                    "mask": prev_output_tokens.eq(self.unk),
+                    "mask": head_mask,
                     "ls": 0.1
                 }
             }

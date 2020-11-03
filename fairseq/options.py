@@ -4,9 +4,9 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import sys
 from typing import Callable, List, Optional
 
-import sys
 import torch
 
 from fairseq import utils
@@ -317,6 +317,7 @@ def get_parser(desc, default_task="translation"):
     parser.add_argument('--only-joint-training', action="store_true")
     parser.add_argument('--joint-training', action="store_true")
     parser.add_argument('--only-eval-loss', action="store_true")
+    parser.add_argument('--update-two-decoding', action="store_true")
 
     from fairseq.registry import REGISTRIES
     for registry_name, REGISTRY in REGISTRIES.items():

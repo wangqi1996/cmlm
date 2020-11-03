@@ -10,7 +10,7 @@ import torch
 
 from fairseq import utils
 from fairseq.data.data_utils import collate_tokens_list
-from fairseq.util2 import load_dependency_head_tree
+from fairseq.dep import load_dependency_head_tree
 
 DecoderOut = namedtuple('IterativeRefinementDecoderOut', [
     'output_tokens',

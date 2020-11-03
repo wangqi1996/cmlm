@@ -3,7 +3,6 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import pdb
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -13,7 +12,36 @@ from fairseq import utils
 from fairseq.modules.multihead_attention import MultiheadAttention
 
 
-class RelativeMultiheadAttention(MultiheadAttention):
+def generate_dependency_matrix(dependency_mat, index=None, cache=False):
+    """Generate the clipped relative positions matrix
+       for a given length and maximum relative positions"""
+
+    # dependency_mat矩阵可以在不同的层复用。
+    if cache:
+        dependency_mat = dependency_mat[index]
+
+    return dependency_mat
+
+
+def relative_matmul(x, z, transpose):
+    """Helper function for relative positions attention.
+    x: [b, h, l, d]
+    z: [b, l, l, d]"""
+
+    batch_size = x.shape[0]
+    heads = x.shape[1]
+    length = x.shape[2]
+    x_t_r = x.transpose(1, 2)
+    if transpose:
+        z_t = z.transpose(-1, -2)
+        x_tz_matmul = torch.matmul(x_t_r, z_t)
+    else:
+        x_tz_matmul = torch.matmul(x_t_r, z)
+    x_tz_matmul_r_t = x_tz_matmul.transpose(1, 2)  # [batch_size, heads, length, length]
+    return x_tz_matmul_r_t.contiguous()
+
+
+class DepRelativeMultiheadAttention(MultiheadAttention):
     """Multi-headed attention.
 
     See "Attention Is All You Need" for more details.
@@ -21,13 +49,13 @@ class RelativeMultiheadAttention(MultiheadAttention):
 
     def __init__(
             self,
-            max_relative_position=8,
+            max_relative_position=16,
             relative_direction=True,
             **kwargs
     ):
         super().__init__(**kwargs)
 
-        self.vocab_size = max_relative_position
+        self.vocab_size = 9
         self.relative_positions_embeddings = nn.Embedding(
             self.vocab_size, self.head_dim)
 
@@ -46,6 +74,7 @@ class RelativeMultiheadAttention(MultiheadAttention):
             attn_mask: Optional[Tensor] = None,
             before_softmax: bool = False,
             need_head_weights: bool = False,
+            **kwargs
     ) -> Tuple[Tensor, Optional[Tensor]]:
         """Input shape: Time x Batch x Channel
 
@@ -64,6 +93,8 @@ class RelativeMultiheadAttention(MultiheadAttention):
                 weights for each head. Implies *need_weights*. Default:
                 return the average attention weights over all heads.
         """
+
+        assert self.self_attention, u"仅仅支持自注意力"
         if need_head_weights:
             need_weights = True
 
@@ -76,9 +107,10 @@ class RelativeMultiheadAttention(MultiheadAttention):
             if saved_state is not None and "prev_key" in saved_state:
                 # previous time steps are cached - no need to recompute
                 # key and value if they are static
+                # 目前用static_kv=True表示encoder-decoder-attention
                 if static_kv:
                     assert self.encoder_decoder_attention and not self.self_attention
-                    key = value = None  # encoder-decoder-attention的key和value设置为None
+                    key = value = None
         else:
             saved_state = None
 
@@ -86,15 +118,6 @@ class RelativeMultiheadAttention(MultiheadAttention):
             q = self.q_proj(query)
             k = self.k_proj(query)
             v = self.v_proj(query)
-        elif self.encoder_decoder_attention:
-            # encoder-decoder attention
-            q = self.q_proj(query)
-            if key is None:
-                assert value is None
-                k = v = None
-            else:
-                k = self.k_proj(key)
-                v = self.v_proj(key)
         else:
             assert key is not None and value is not None
             q = self.q_proj(query)
@@ -212,8 +235,9 @@ class RelativeMultiheadAttention(MultiheadAttention):
         query_key = MultiheadAttention.apply_sparse_mask(query_key, tgt_len, src_len, bsz)
 
         # compute relative weight
-        relative_positions_matrix = generate_relative_positions_matrix(
-            src_len, self.max_relative_positions, incremental_state is not None)
+
+        relative_positions_matrix = generate_dependency_matrix(dependency_mat=kwargs['dependency_mat'],
+                                                               index=tgt_len, cache=incremental_state is not None)
         #  1 or key_len x key_len x dim_per_head
         relations_keys = self.relative_positions_embeddings(
             relative_positions_matrix.to(key.device))
@@ -224,8 +248,8 @@ class RelativeMultiheadAttention(MultiheadAttention):
             attn_weights = query_key + relative_matmul(q.view(bsz, self.num_heads, tgt_len, self.head_dim),
                                                        relations_keys, True).view(bsz * self.num_heads, tgt_len,
                                                                                   src_len)
-        except RuntimeError:
-            pdb.set_trace()
+        except Exception as e:
+            print(e)
 
         assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
 

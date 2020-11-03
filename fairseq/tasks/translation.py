@@ -287,7 +287,10 @@ class TranslationTask(FairseqTask):
         return model
 
     def valid_step(self, sample, model, criterion):
-        loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
+
+        # 看是否需要获取dependency_mat
+        special_input = model.get_special_input(sample)
+        loss, sample_size, logging_output = super().valid_step(sample, model, criterion, **special_input)
         if self.args.eval_bleu:
             bleu = self._inference_with_bleu(self.sequence_generator, sample, model)
             logging_output['_bleu_sys_len'] = bleu.sys_len

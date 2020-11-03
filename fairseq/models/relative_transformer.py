@@ -1,15 +1,16 @@
 from typing import Dict, List, Optional
 
-import torch.nn as nn
 from torch import Tensor
 
+from fairseq.dep import DepChildTree, DepHeadTree, get_dependency_mat, get_coarse_dependency_mat
 from fairseq.models import (
     register_model,
     register_model_architecture,
 )
 from fairseq.models.fairseq_encoder import EncoderOut
-from fairseq.models.transformer import TransformerEncoder, TransformerDecoder, TransformerModel, Linear
+from fairseq.models.transformer import TransformerEncoder, TransformerDecoder, TransformerModel
 from fairseq.modules import MultiheadAttention
+from fairseq.modules.dep_attention import DepRelativeMultiheadAttention
 from fairseq.modules.relative_multihead_attention import RelativeMultiheadAttention
 from fairseq.modules.transformer_layer import (
     TransformerEncoderLayer,
@@ -23,7 +24,7 @@ class RelativeTransformerEncoderLayer(TransformerEncoderLayer):
         """
         Optionally use relative position representation.
         """
-        if args.positional_embeddings == 'abl':
+        if args.positional_embeddings in ['abl', 'dep+abl']:
             return MultiheadAttention(
                 embed_dim,
                 args.encoder_attention_heads,
@@ -31,7 +32,6 @@ class RelativeTransformerEncoderLayer(TransformerEncoderLayer):
                 self_attention=True,
                 q_noise=self.quant_noise,
                 qn_block_size=self.quant_noise_block_size)
-
         else:
             return RelativeMultiheadAttention(
                 max_relative_position=args.max_relative_position,
@@ -58,6 +58,18 @@ class RelativeTransformerDecoderLayer(TransformerDecoderLayer):
                 self_attention=not getattr(args, "cross_self_attention", False),
                 q_noise=self.quant_noise,
                 qn_block_size=self.quant_noise_block_size,
+            )
+        elif args.positional_embeddings == "dep+abl":
+            return DepRelativeMultiheadAttention(
+                max_relative_position=args.max_relative_position,
+                relative_direction=args.relative_direction,
+                embed_dim=embed_dim,
+                num_heads=args.encoder_attention_heads,
+                dropout=args.attention_dropout,
+                add_bias_kv=add_bias_kv,
+                self_attention=True,
+                q_noise=self.quant_noise,
+                qn_block_size=self.quant_noise_block_size
             )
         else:
             return RelativeMultiheadAttention(
@@ -92,6 +104,7 @@ class RelativeTransformerDecoder(TransformerDecoder):
             full_context_alignment: bool = False,
             alignment_layer: Optional[int] = None,
             alignment_heads: Optional[int] = None,
+            **kwargs
     ):
         """
         Similar to *forward* but only return features.
@@ -179,7 +192,8 @@ class RelativeTransformerDecoder(TransformerDecoder):
                 self_attn_mask=self_attn_mask,
                 self_attn_padding_mask=self_attn_padding_mask,
                 need_attn=bool((idx == alignment_layer)),
-                need_head_weights=bool((idx == alignment_layer)),
+                need_head_weights=bool((idx == alignment_layer), ),
+                **kwargs
             )
             inner_states.append(x)
             if layer_attn is not None and idx == alignment_layer:
@@ -204,30 +218,45 @@ class RelativeTransformerDecoder(TransformerDecoder):
         return x, {"attn": [attn], "inner_states": inner_states}
 
 
-class LengthPredictionNetwork(nn.Module):
-    def __init__(self, hidden_dim):
-        super(LengthPredictionNetwork, self).__init__()
-        self.fc = nn.Sequential(
-            Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            Linear(hidden_dim, 1)
-        )
-
-    def forward(self, x):
-        return self.fc(x)
-
-
 @register_model("relative_transformer")
 class RelativeTransformerModel(TransformerModel):
     def __init__(self, args, encoder, decoder):
         super(RelativeTransformerModel, self).__init__(args, encoder, decoder)
 
+        # dependency_treee
+        self.head_tree, self.child_tree, = None, None
+        if self.args.positional_embeddings == "dep+abl":
+            self.child_tree = DepChildTree(self.args.valid_subset)
+            self.head_tree = DepHeadTree(self.args.valid_subset)
+
+        self.dep_mat_grain = getattr(args, "dep_mat_grain", "fine")
+        print(self.dep_mat_grain)
+
+    def get_dependency_mat(self, sample_ids, target_token):
+        if self.head_tree is not None and self.child_tree is not None:
+            if self.dep_mat_grain == "fine":
+                dependency_mat = get_dependency_mat(self.head_tree, self.child_tree, sample_ids, self.training,
+                                                    target_token)
+            elif self.dep_mat_grain == "coarse":
+                dependency_mat = get_coarse_dependency_mat(self.head_tree, self.child_tree, sample_ids, self.training,
+                                                           target_token)
+        else:
+            dependency_mat = None
+
+        return dependency_mat
+
+    def get_special_input(self, samples):
+        dependency_mat = self.get_dependency_mat(samples["id"].cpu().tolist(),
+                                                 samples['net_input']['prev_output_tokens'])
+        return {"dependency_mat": dependency_mat}
+
     @staticmethod
     def add_args(parser):
         TransformerModel.add_args(parser)
-        parser.add_argument('--positional-embeddings', choices=['rel', 'abl', 'rel+abl'])
-        parser.add_argument('--max-relative-position', type=int)
+        parser.add_argument('--positional-embeddings', choices=['rel', 'abl', 'rel+abl', 'dep+abl'])
+        parser.add_argument('--max-relative-position', type=int, default=16)
         parser.add_argument('--relative-direction', default=True)
+        parser.add_argument('--dep-mat-grain', type=str, default="fine", choices=['fine', 'coarse'])  # fine coarse
 
     @classmethod
     def build_encoder(cls, args, src_dict, embed_tokens):
@@ -249,7 +278,8 @@ class RelativeTransformerModel(TransformerModel):
                 return_all_hiddens: bool = True,
                 features_only: bool = False,
                 alignment_layer: Optional[int] = None,
-                alignment_heads: Optional[int] = None):
+                alignment_heads: Optional[int] = None,
+                dependency_mat=None):
         encoder_out = self.encoder(
             src_tokens, src_lengths=src_lengths, return_all_hiddens=return_all_hiddens
         )
@@ -261,6 +291,7 @@ class RelativeTransformerModel(TransformerModel):
             alignment_heads=alignment_heads,
             src_lengths=src_lengths,
             return_all_hiddens=return_all_hiddens,
+            dependency_mat=dependency_mat
         )
 
         return x, extra

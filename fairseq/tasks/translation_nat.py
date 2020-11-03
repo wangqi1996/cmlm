@@ -1,9 +1,9 @@
 # encoding=utf-8
 
+from fairseq.dep import load_dependency_tree
 from fairseq.tasks import register_task
 from fairseq.tasks.translation_lev import TranslationLevenshteinTask
 from fairseq.util2 import get_reference_mask, get_dependency_mask, merge_mask, get_base_mask
-from fairseq.util2 import load_dependency_tree
 
 
 @register_task('translation_nat')

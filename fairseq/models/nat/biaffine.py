@@ -4,9 +4,10 @@ from torch import nn
 from torch.nn.init import orthogonal_
 
 from fairseq.data.data_utils import collate_tokens_list
+from fairseq.dep import load_dependency_head_tree
 from fairseq.models import register_model_architecture, register_model
 from fairseq.models.nat import CMLMNATransformerModel, cmlm_base_architecture
-from fairseq.util2 import load_dependency_head_tree, get_base_mask, set_value1, set_value2
+from fairseq.util2 import get_base_mask, set_value1, set_value2
 
 
 class BiaffineAttentionDependency(nn.Module):
@@ -177,8 +178,6 @@ class BiaffineAttention(CMLMNATransformerModel):
         #     state_dict = new_state_dict
 
         super().load_state_dict(state_dict, strict)
-
-
 
     def get_dep_reference(self, sample_ids):
         if self.training:

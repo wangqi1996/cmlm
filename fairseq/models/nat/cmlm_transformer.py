@@ -13,9 +13,10 @@ arXiv preprint arXiv:1904.09324 (2019).
 import numpy as np
 
 from fairseq.data.data_utils import collate_tokens_list
+from fairseq.dep import load_dependency_tree
 from fairseq.models import register_model, register_model_architecture
 from fairseq.models.nat import NATransformerModel, torch
-from fairseq.util2 import new_arange, get_reference_mask, merge_mask, get_dependency_mask, load_dependency_tree, \
+from fairseq.util2 import new_arange, get_reference_mask, merge_mask, get_dependency_mask, \
     get_base_mask, set_all_token, set_diff_tokens, set_step_value
 
 

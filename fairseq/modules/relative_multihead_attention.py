@@ -4,16 +4,15 @@
 # LICENSE file in the root directory of this source tree.
 
 import pdb
-from typing import Dict, Optional, Tuple
-
 import torch
 from torch import Tensor, nn
+from typing import Dict, Optional, Tuple
 
 from fairseq import utils
 from fairseq.modules.multihead_attention import MultiheadAttention
 
 
-def generate_relative_positions_matrix(length, max_relative_positions, cache=False):
+def generate_relative_positions_matrix(length, max_relative_positions, cache=False, heads=None):
     """Generate the clipped relative positions matrix
        for a given length and maximum relative positions"""
 
@@ -82,6 +81,7 @@ class RelativeMultiheadAttention(MultiheadAttention):
             attn_mask: Optional[Tensor] = None,
             before_softmax: bool = False,
             need_head_weights: bool = False,
+            **kwargs
     ) -> Tuple[Tensor, Optional[Tensor]]:
         """Input shape: Time x Batch x Channel
 
@@ -240,7 +240,7 @@ class RelativeMultiheadAttention(MultiheadAttention):
 
         # compute relative weight
         relative_positions_matrix = generate_relative_positions_matrix(
-            src_len, self.max_relative_positions, incremental_state is not None)
+            src_len, self.max_relative_positions, incremental_state is not None, heads=self.num_heads)
         #  1 or key_len x key_len x dim_per_head
         relations_keys = self.relative_positions_embeddings(
             relative_positions_matrix.to(key.device))
