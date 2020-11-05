@@ -27,10 +27,6 @@ def relative_matmul(x, z, transpose):
     """Helper function for relative positions attention.
     x: [b, h, l, d]
     z: [b, l, l, d]"""
-
-    batch_size = x.shape[0]
-    heads = x.shape[1]
-    length = x.shape[2]
     x_t_r = x.transpose(1, 2)
     if transpose:
         z_t = z.transpose(-1, -2)
@@ -244,12 +240,10 @@ class DepRelativeMultiheadAttention(MultiheadAttention):
         #  1 or key_len x key_len x dim_per_head
         relations_values = self.relative_positions_embeddings(
             relative_positions_matrix.to(key.device))
-        try:
-            attn_weights = query_key + relative_matmul(q.view(bsz, self.num_heads, tgt_len, self.head_dim),
-                                                       relations_keys, True).view(bsz * self.num_heads, tgt_len,
-                                                                                  src_len)
-        except Exception as e:
-            print(e)
+
+        attn_weights = query_key + relative_matmul(q.view(bsz, self.num_heads, tgt_len, self.head_dim),
+                                                   relations_keys, True).view(bsz * self.num_heads, tgt_len,
+                                                                              src_len)
 
         assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
 
@@ -307,9 +301,8 @@ class DepRelativeMultiheadAttention(MultiheadAttention):
 
         return attn, attn_weights
 
-
-if __name__ == '__main__':
-    rel_attn = RelativeMultiheadAttention(16, True, embed_dim=64, num_heads=4)
-    x = torch.randn((5, 7, 64))
-
-    print(rel_attn(x, x, x))
+# if __name__ == '__main__':
+#     rel_attn = RelativeMultiheadAttention(16, True, embed_dim=64, num_heads=4)
+#     x = torch.randn((5, 7, 64))
+#
+#     print(rel_attn(x, x, x))

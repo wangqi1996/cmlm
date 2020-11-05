@@ -169,7 +169,9 @@ class TranslationLevenshteinTask(TranslationTask):
         model.train()
         noise_probability = self.noise_probability_schedule(update_num)
         sample['prev_target'] = self.inject_noise(sample['target'], noise_probability)
-        loss, sample_size, logging_output = criterion(model, sample, update_nums=update_num)
+
+        special_input = model.get_special_input(sample)
+        loss, sample_size, logging_output = criterion(model, sample, update_nums=update_num, **special_input)
         if ignore_grad:
             loss *= 0
         optimizer.backward(loss)
@@ -187,6 +189,7 @@ class TranslationLevenshteinTask(TranslationTask):
         model.eval()
 
         _logging_output = None
+
         # 这个会不会和其余的地方冲突，但是因为是valid，没有loss一说
         if self.args.eval_accuracy:
             with torch.no_grad():
@@ -197,7 +200,8 @@ class TranslationLevenshteinTask(TranslationTask):
 
         with torch.no_grad():
             sample['prev_target'] = self.inject_noise(sample['target'], None)
-            loss, sample_size, logging_output = criterion(model, sample)
+            special_input = model.get_special_input(sample)
+            loss, sample_size, logging_output = criterion(model, sample, **special_input)
 
             if _logging_output is not None:
                 logging_output.setdefault('need_print', {})
@@ -205,7 +209,7 @@ class TranslationLevenshteinTask(TranslationTask):
                 logging_output['need_print'].update(_logging_output['need_print'])
 
         if getattr(self.args, 'eval_bleu', False):
-
+            sample['special_input'] = special_input
             bleu = self._inference_with_bleu(self.sequence_generator, sample, model)
             logging_output['_bleu_sys_len'] = bleu.sys_len
             logging_output['_bleu_ref_len'] = bleu.ref_len

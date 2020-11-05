@@ -200,6 +200,9 @@ class LabelSmoothedDualImitationCriterion(FairseqCriterion):
                 # print(correct_predict_head / all_predict_head)
                 metrics.log_scalar('dep_accuracy', correct_predict_head / all_predict_head, weight=all_predict_head,
                                    round=3)
+            if "mask_ratio" in logging_outputs[0]['need_print']:
+                mask_ratio = utils.item(sum(log['need_print']['mask_ratio'] for log in logging_outputs))
+                metrics.log_scalar('mask_ratio', mask_ratio, weight=0, priority=300)
 
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:

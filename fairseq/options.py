@@ -318,6 +318,9 @@ def get_parser(desc, default_task="translation"):
     parser.add_argument('--joint-training', action="store_true")
     parser.add_argument('--only-eval-loss', action="store_true")
     parser.add_argument('--update-two-decoding', action="store_true")
+    parser.add_argument('--glat-warmup-steps', type=int, default=-1)
+    parser.add_argument('--add-unk-embedding', action="store_true")
+    parser.add_argument('--full-mask-steps', type=int, default=-1)
 
     from fairseq.registry import REGISTRIES
     for registry_name, REGISTRY in REGISTRIES.items():
@@ -709,6 +712,7 @@ def add_generation_args(parser):
 
     parser.add_argument('--compute-dep-accuracy', action="store_true")
     parser.add_argument('--use-posterior', action="store_true")
+    parser.add_argument('--use-dependency-mat', action="store_true")
 
     # use-reference-mask 和  use-reference-probability 可以叠加使用
 

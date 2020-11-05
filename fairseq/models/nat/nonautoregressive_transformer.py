@@ -73,6 +73,9 @@ class NATransformerModel(FairseqNATModel):
             decoder.apply(init_bert_params)
         return decoder
 
+    def inference_special_input(self, special_input, not_terminated):
+        return special_input
+
     def forward(
             self, src_tokens, src_lengths, prev_output_tokens, tgt_tokens, step=0, **kwargs
     ):
@@ -88,7 +91,8 @@ class NATransformerModel(FairseqNATModel):
             normalize=False,
             prev_output_tokens=prev_output_tokens,
             encoder_out=encoder_out,
-            step=step)
+            step=step,
+            **kwargs)
 
         return {
             "word_ins": {
@@ -219,6 +223,7 @@ class NATransformerDecoder(FairseqNATDecoder):
         self.bos = dictionary.bos()
         self.unk = dictionary.unk()
         self.eos = dictionary.eos()
+        self.pad = dictionary.pad()
 
         self.encoder_embed_dim = args.encoder_embed_dim
         self.sg_length_pred = getattr(args, "sg_length_pred", False)
@@ -227,21 +232,18 @@ class NATransformerDecoder(FairseqNATDecoder):
         self.src_embedding_copy = getattr(args, "src_embedding_copy", False)
         self.embed_length = Embedding(256, self.encoder_embed_dim, None)
 
+        self.add_unk_embedding = getattr(args, "add_unk_embedding", False)
+        if self.add_unk_embedding:
+            # pad: 1 unk:2 non:3
+            self.unk_embedding = Embedding(4, self.encoder_embed_dim, self.pad)
+
     @ensemble_decoder
     def forward(self, normalize, encoder_out, prev_output_tokens, step=0, **unused):
-        prev_target_embedding = None
-        if "prev_target_embedding" in unused:
-            prev_target_embedding = unused['prev_target_embedding']
-
-        src_embedding_copy = self.src_embedding_copy
-        if "src_embedding_copy" in unused:
-            src_embedding_copy = unused['src_embedding_copy']
-
         features, _, input_embedding = self.extract_features(
             prev_output_tokens,
             encoder_out=encoder_out,
-            embedding_copy=(step == 0) & src_embedding_copy,
-            prev_target_embedding=prev_target_embedding,
+            embedding_copy=(step == 0) & self.src_embedding_copy,
+            **unused
         )
         decoder_out = self.output_layer(features)
         _decoder_out = {}
@@ -333,6 +335,7 @@ class NATransformerDecoder(FairseqNATDecoder):
                 encoder_out.encoder_padding_mask if encoder_out is not None else None,
                 self_attn_mask=None,
                 self_attn_padding_mask=decoder_padding_mask,
+                **unused
             )
             inner_states.append(x)
 
@@ -362,6 +365,16 @@ class NATransformerDecoder(FairseqNATDecoder):
                 x = self.project_in_dim(x)
         else:
             x = states
+
+        if self.add_unk_embedding:
+            result = prev_output_tokens.eq(self.pad).long()  # pad=1
+            unk_mask = prev_output_tokens.eq(self.unk)
+            result.masked_fill_(unk_mask, 2)  # unk=2
+            not_unk_mask = prev_output_tokens.ne(self.unk) & prev_output_tokens.ne(self.pad)
+            result.masked_fill_(not_unk_mask, 3)  # normal=3
+
+            unk_embedding = self.unk_embedding(result)
+            x += unk_embedding
 
         if positions is not None:
             x += positions

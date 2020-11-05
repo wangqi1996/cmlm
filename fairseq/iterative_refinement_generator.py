@@ -10,7 +10,7 @@ import torch
 
 from fairseq import utils
 from fairseq.data.data_utils import collate_tokens_list
-from fairseq.dep import load_dependency_head_tree
+from fairseq.dep import load_dependency_head_tree, DepHeadTree, DepChildTree
 
 DecoderOut = namedtuple('IterativeRefinementDecoderOut', [
     'output_tokens',
@@ -122,6 +122,12 @@ class IterativeRefinementGenerator(object):
             self.biaffine_tree = load_dependency_head_tree(dependency_tree_path=dep_path, add_one=True)
 
         self.compute_accuracy = getattr(args, "compute_dep_accuracy", False)
+
+        # dependency_mat
+        self.use_dependency_mat = getattr(args, "use_dependency_mat", False)
+        if self.use_dependency_mat:
+            self.dependency_mat_head_tree = DepHeadTree(valid_subset=self.args.gen_subset, only_valid=True)
+            self.dependency_mat_child_tree = DepChildTree(valid_subset=self.args.gen_subset, only_valid=True)
 
     def generate_batched_itr(
             self,
@@ -267,6 +273,18 @@ class IterativeRefinementGenerator(object):
             head_label = collate_tokens_list(tree, pad_idx=self.pad)
             biaffine_tree = torch.from_numpy(head_label).long().cuda()
 
+        special_input = sample.get('special_input', None)
+
+        # 每个模型知道自己的special
+        dependency_mat = None
+        if self.use_dependency_mat:
+            model.child_tree = self.dependency_mat_child_tree
+            model.head_tree = self.dependency_mat_head_tree
+            sample['prev_target'] = prev_output_tokens
+            dependency_mat = model.get_special_input(sample)['dependency_mat']
+
+        # TODO 暂时强制写死
+        self.max_iter = 0
         for step in range(self.max_iter + 1):
 
             # reference_probability = 0.0
@@ -296,8 +314,14 @@ class IterativeRefinementGenerator(object):
                 "biaffine_tree": biaffine_tree,
                 "compute_dep_accuracy": self.compute_accuracy,
                 "random_modify_token": self.random_modify_token,
-                "use_posterior": self.use_posterior
+                "use_posterior": self.use_posterior,
             }
+            if special_input is not None:
+                decoder_options.update(special_input)
+
+            if dependency_mat is not None:
+                decoder_options["dependency_mat"] = dependency_mat
+
             prev_decoder_out = prev_decoder_out._replace(
                 step=step,
                 max_step=self.max_iter + 1,
@@ -376,6 +400,8 @@ class IterativeRefinementGenerator(object):
             encoder_out = model.encoder.reorder_encoder_out(encoder_out, not_terminated.nonzero().squeeze())
             sent_idxs = sent_idxs[not_terminated]
             prev_output_tokens = prev_decoder_out.output_tokens.clone()
+
+            special_input = model.inference_special_input(special_input, not_terminated)
 
         if self.beam_size > 1:
             if reranker is not None:

@@ -159,7 +159,7 @@ class TransformerDecoderLayer(nn.Module):
     """
 
     def __init__(
-            self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False
+            self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False, layer_id=0
     ):
         super().__init__()
         self.embed_dim = args.decoder_embed_dim
@@ -174,6 +174,7 @@ class TransformerDecoderLayer(nn.Module):
             args,
             add_bias_kv=add_bias_kv,
             add_zero_attn=add_zero_attn,
+            layer_id=layer_id
         )
         self.activation_fn = utils.get_activation_fn(
             activation=getattr(args, "activation_fn", "relu")
@@ -217,7 +218,7 @@ class TransformerDecoderLayer(nn.Module):
     def build_fc2(self, input_dim, output_dim, q_noise, qn_block_size):
         return quant_noise(nn.Linear(input_dim, output_dim), q_noise, qn_block_size)
 
-    def build_self_attention(self, embed_dim, args, add_bias_kv=False, add_zero_attn=False):
+    def build_self_attention(self, embed_dim, args, add_bias_kv=False, add_zero_attn=False, layer_id=0):
         return MultiheadAttention(
             embed_dim,
             args.decoder_attention_heads,
