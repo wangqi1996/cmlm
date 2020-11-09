@@ -10,7 +10,8 @@ import torch
 
 from fairseq import utils
 from fairseq.data.data_utils import collate_tokens_list
-from fairseq.dep import load_dependency_head_tree, DepHeadTree, DepChildTree
+from fairseq.dep import load_dependency_head_tree
+from fairseq.util2 import get_mask_num, set_diff_tokens, set_all_token
 
 DecoderOut = namedtuple('IterativeRefinementDecoderOut', [
     'output_tokens',
@@ -93,6 +94,8 @@ class IterativeRefinementGenerator(object):
 
             self.use_posterior = getattr(args, "use_posterior", False)
 
+            self.compute_unk_accuracy = getattr(args, "compute_unk_accuracy", False)
+
         self.tgt_dict = tgt_dict
 
         if self.use_reference_probability:
@@ -111,6 +114,9 @@ class IterativeRefinementGenerator(object):
 
         self.args = args
 
+        self.mask_ratio = getattr(args, "mask_ratio", 0.0)
+        self.test_mask_ratio = getattr(args, "test_mask_ratio", False)
+
         # biaffine
         self.biaffine_tree = None
         if getattr(args, "compute_dep_accuracy", False):
@@ -122,12 +128,6 @@ class IterativeRefinementGenerator(object):
             self.biaffine_tree = load_dependency_head_tree(dependency_tree_path=dep_path, add_one=True)
 
         self.compute_accuracy = getattr(args, "compute_dep_accuracy", False)
-
-        # dependency_mat
-        self.use_dependency_mat = getattr(args, "use_dependency_mat", False)
-        if self.use_dependency_mat:
-            self.dependency_mat_head_tree = DepHeadTree(valid_subset=self.args.gen_subset, only_valid=True)
-            self.dependency_mat_child_tree = DepChildTree(valid_subset=self.args.gen_subset, only_valid=True)
 
     def generate_batched_itr(
             self,
@@ -200,7 +200,36 @@ class IterativeRefinementGenerator(object):
             target = references
         else:
             target = None
-        prev_decoder_out = model.initialize_output_tokens(encoder_out, src_tokens, target)
+
+        prev_target_embedding = None
+        if not self.test_mask_ratio:
+            prev_decoder_out = model.initialize_output_tokens(encoder_out, src_tokens, target)
+            output_token = prev_decoder_out.output_tokens
+        else:
+
+            # 因为只有一轮，所以sample不会有问题
+            mask_length = get_mask_num(references, self.mask_ratio)
+            output_token, prev_target_embedding = model.get_mask_output(reference=references, samples=sample,
+                                                                        encoder_out=encoder_out,
+                                                                        mask_length=mask_length)
+
+            output_scores = output_token.new_zeros(
+                *output_token.size()
+            ).type_as(encoder_out.encoder_out)
+
+            prev_decoder_out = DecoderOut(
+                output_tokens=output_token,
+                output_scores=output_scores,
+                attn=None,
+                step=0,
+                max_step=0,
+                history=None
+            )
+
+        if self.compute_unk_accuracy:
+            need_predict_token = (output_token == self.unk).sum().item()
+            unk_token_mask = output_token == self.unk
+            set_all_token(need_predict_token)
 
         if self.beam_size > 1:
             assert model.allow_length_beam, \
@@ -274,14 +303,9 @@ class IterativeRefinementGenerator(object):
             biaffine_tree = torch.from_numpy(head_label).long().cuda()
 
         special_input = sample.get('special_input', None)
-
-        # 每个模型知道自己的special
-        dependency_mat = None
-        if self.use_dependency_mat:
-            model.child_tree = self.dependency_mat_child_tree
-            model.head_tree = self.dependency_mat_head_tree
+        if special_input is None:
             sample['prev_target'] = prev_output_tokens
-            dependency_mat = model.get_special_input(sample)['dependency_mat']
+            special_input = model.get_special_input(sample)
 
         # TODO 暂时强制写死
         self.max_iter = 0
@@ -315,12 +339,10 @@ class IterativeRefinementGenerator(object):
                 "compute_dep_accuracy": self.compute_accuracy,
                 "random_modify_token": self.random_modify_token,
                 "use_posterior": self.use_posterior,
+                "prev_target_embedding": prev_target_embedding
             }
             if special_input is not None:
                 decoder_options.update(special_input)
-
-            if dependency_mat is not None:
-                decoder_options["dependency_mat"] = dependency_mat
 
             prev_decoder_out = prev_decoder_out._replace(
                 step=step,
@@ -402,6 +424,11 @@ class IterativeRefinementGenerator(object):
             prev_output_tokens = prev_decoder_out.output_tokens.clone()
 
             special_input = model.inference_special_input(special_input, not_terminated)
+
+        # compute accuracy
+        if self.compute_unk_accuracy:
+            correct_predict = ((references == decoder_out.output_tokens) & unk_token_mask).sum().item()
+            set_diff_tokens(correct_predict)
 
         if self.beam_size > 1:
             if reranker is not None:

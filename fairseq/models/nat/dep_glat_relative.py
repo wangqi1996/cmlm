@@ -7,11 +7,12 @@ import random
 
 from fairseq.dep import DepLayerTree
 from fairseq.models import register_model, register_model_architecture
-from fairseq.models.nat import NATransformerModel, base_architecture
+from fairseq.models.nat import RelativeNonTransformerModel
+from fairseq.models.nat.nonauto_dep_relative_transformer import transformer_iwslt_de_en
 
 
-@register_model('DEP_GLAT_NOJOINT')
-class DEP_GLAT_NOOINT(NATransformerModel):
+@register_model('DEP_GLAT_RELATIVE')
+class DEP_GLAT_RELATIVE(RelativeNonTransformerModel):
 
     def __init__(self, args, encoder, decoder):
 
@@ -180,7 +181,7 @@ class DEP_GLAT_NOOINT(NATransformerModel):
             encoder_out=encoder_out,
             prev_target_embedding=prev_target_embedding,
             return_decoder_output=True,
-            step=1)
+            **kwargs)
 
         head_mask = prev_output_tokens.eq(self.unk)
 
@@ -215,6 +216,6 @@ class DEP_GLAT_NOOINT(NATransformerModel):
         return ratio * 0.99 + 0.1
 
 
-@register_model_architecture("DEP_GLAT_NOJOINT", "DEP_GLAT_NOJOINT")
+@register_model_architecture("DEP_GLAT_RELATIVE", "DEP_GLAT_RELATIVE")
 def GLAT(args):
-    base_architecture(args)
+    transformer_iwslt_de_en(args)

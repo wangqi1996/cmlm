@@ -362,11 +362,6 @@ class TranslationTask(FairseqTask):
             s = self.tgt_dict.string(
                 toks.int().cpu(),
                 self.args.eval_bleu_remove_bpe,
-                # The default unknown string in fairseq is `<unk>`, but
-                # this is tokenized by sacrebleu as `< unk >`, inflating
-                # BLEU scores. Instead, we use a somewhat more verbose
-                # alternative that is unlikely to appear in the real
-                # reference, but doesn't get split into multiple tokens.
                 unk_string=(
                     "UNKNOWNTOKENINREF" if escape_unk else "UNKNOWNTOKENINHYP"
                 ),

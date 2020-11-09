@@ -9,10 +9,10 @@ Translate pre-processed data with a trained model.
 
 import logging
 import os
+import sys
 
 import math
 import numpy as np
-import sys
 import torch
 
 from fairseq import bleu, checkpoint_utils, options, tasks, utils
@@ -277,6 +277,8 @@ def _main(args, output_file):
     print(get_value2())
     print(get_diff_tokens())
     print(get_all_tokens())
+    if get_all_tokens() > 0:
+        print("%.2f" % (get_diff_tokens() / get_all_tokens()))
     # print(get_value3())
     # print(get_step_value())
     #

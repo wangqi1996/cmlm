@@ -106,6 +106,25 @@ class DepChildTree(DepTree):
         return train_dependency_tree_child, valid_dependency_tree_child
 
 
+class DepLayerTree(DepTree):
+    def get_dep_tree(self, valid_subset="valid", only_valid=False):
+
+        if not only_valid:
+            train_dependency_tree_child = load_dependency_tree(
+                "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency.train.log",
+                add_one=True
+            )  # 节点index index从0开始计数，孩子节点编号从1开始计数。
+        else:
+            train_dependency_tree_child = None
+
+        valid_dependency_tree_child = load_dependency_tree(
+            "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency." + str(
+                valid_subset) + ".log",
+            add_one=True
+        )
+        return train_dependency_tree_child, valid_dependency_tree_child
+
+
 class DepHeadTree(DepTree):
 
     def get_dep_tree(self, valid_subset="valid", only_valid=False):

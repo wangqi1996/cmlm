@@ -166,19 +166,31 @@ def new_arange(x, *size):
     return torch.arange(size[-1], device=x.device).expand(*size).contiguous()
 
 
-def _random_mask(target_tokens, noise_probability=None):
+def get_mask_num(target_tokens, mask_ratio):
+    target_masks = get_base_mask(target_tokens)
+    target_length = (target_masks.sum(1) * mask_ratio).int()
+
+    return target_length
+
+
+def _random_mask(target_tokens, noise_probability=None, target_length=None):
+    """ target_length其实是mask_length"""
     unk = 3
 
     target_masks = get_base_mask(target_tokens)
+
+    if target_length is None:
+        target_length = target_masks.sum(1).float()
+
+        if noise_probability is None:
+            # sample from [0,1]
+            target_length = target_length * target_length.clone().uniform_()  # 要mask的长度
+        else:
+            target_length = target_length * noise_probability
+        target_length = target_length + 1  # make sure to mask at least one token.
+
     target_score = target_tokens.clone().float().uniform_()
     target_score.masked_fill_(~target_masks, 2.0)
-    target_length = target_masks.sum(1).float()
-    if noise_probability is None:
-        # sample from [0,1]
-        target_length = target_length * target_length.clone().uniform_()  # 要mask的长度
-    else:
-        target_length = target_length * noise_probability
-    target_length = target_length + 1  # make sure to mask at least one token.
 
     _, target_rank = target_score.sort(1)
     target_cutoff = new_arange(target_rank) < target_length[:, None].long()

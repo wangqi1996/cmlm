@@ -16,6 +16,7 @@ from fairseq.models.nat import (
 )
 from fairseq.models.transformer import Embedding
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
+from fairseq.util2 import _random_mask
 
 
 def _mean_pooling(enc_feats, src_masks):
@@ -117,7 +118,7 @@ class NATransformerModel(FairseqNATModel):
 
         if kwargs.get('return_decoder_output', False):
             logits, _decoder_out = self.decoder(
-                normalize=True,
+                normalize=False,
                 prev_output_tokens=output_tokens,
                 encoder_out=encoder_out,
                 step=step,
@@ -126,7 +127,7 @@ class NATransformerModel(FairseqNATModel):
             hidden_state = _decoder_out['return_decoder_output']
         else:
             logits = self.decoder(
-                normalize=True,
+                normalize=False,
                 prev_output_tokens=output_tokens,
                 encoder_out=encoder_out,
                 step=step,
@@ -152,6 +153,7 @@ class NATransformerModel(FairseqNATModel):
             return d
 
     def initialize_output_tokens(self, encoder_out, src_tokens, target=None):
+
         # length prediction
         if target is None:
             length_tgt = self.decoder.forward_length_prediction(
@@ -212,6 +214,13 @@ class NATransformerModel(FairseqNATModel):
             output_tokens=initial_output_tokens,
             output_scores=initial_output_scores
         )
+
+    def get_mask_output(self, reference=None, mask_length=None, **kwargs):
+        """ 反正也只有一轮 """
+        output = _random_mask(reference, target_length=mask_length)
+        embedding, decoder_padding_mask = self.decoder.forward_embedding(output)
+
+        return output, embedding
 
 
 class NATransformerDecoder(FairseqNATDecoder):
@@ -306,14 +315,12 @@ class NATransformerDecoder(FairseqNATDecoder):
             the LevenshteinTransformer decoder has full-attention to all generated tokens
         """
         # embedding
-        if embedding_copy:
-            x, decoder_padding_mask = self.get_copy_embedding(encoder_out, prev_output_tokens)
-
-        elif "prev_target_embedding" in unused and unused['prev_target_embedding'] is not None:
+        if "prev_target_embedding" in unused and unused['prev_target_embedding'] is not None:
             x = unused['prev_target_embedding']
             decoder_padding_mask = prev_output_tokens.eq(self.padding_idx)
+        elif embedding_copy:
+            x, decoder_padding_mask = self.get_copy_embedding(encoder_out, prev_output_tokens)
         else:
-
             x, decoder_padding_mask = self.forward_embedding(prev_output_tokens)
 
         input_embedding = x

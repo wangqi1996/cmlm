@@ -60,7 +60,7 @@ class RelativeNonTransformerDecoderLayer(TransformerDecoderLayer):
 class RelativeNonTransformerDecoder(NATransformerDecoder):
 
     def build_decoder_layer(self, args, no_encoder_attn=False, layer_id=0):
-        return RelativeNonTransformerDecoderLayer(args, no_encoder_attn, layer_id=0)
+        return RelativeNonTransformerDecoderLayer(args, no_encoder_attn, layer_id=layer_id)
 
     def extract_features(
             self,

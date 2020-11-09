@@ -714,6 +714,10 @@ def add_generation_args(parser):
     parser.add_argument('--use-posterior', action="store_true")
     parser.add_argument('--use-dependency-mat', action="store_true")
 
+    parser.add_argument('--mask-ratio', type=float, default=0.0)
+    parser.add_argument('--test-mask-ratio', action="store_true")
+    parser.add_argument('--compute-unk-accuracy', action="store_true")
+
     # use-reference-mask 和  use-reference-probability 可以叠加使用
 
     # special decoding format for advanced decoding.

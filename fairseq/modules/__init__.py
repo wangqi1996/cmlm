@@ -32,6 +32,9 @@ from .transformer_sentence_encoder import TransformerSentenceEncoder
 from .unfold import unfold1d
 from .transformer_layer import TransformerDecoderLayer, TransformerEncoderLayer
 from .vggblock import VGGBlock
+from .nat_base_layer import BlockedEncoderLayer, BlockedDecoderLayer
+from .nat_base_modules import RelativeSelfAttention, FFNAttention, DotProductAttention, FeedForward
+
 
 __all__ = [
     'AdaptiveInput',

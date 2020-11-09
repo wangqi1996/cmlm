@@ -3,16 +3,18 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 import torch
+from torch import Tensor
 
 from fairseq.models import register_model_architecture, register_model
-from fairseq.models.nat import NATransformerModel, base_architecture
+from fairseq.models.nat import base_architecture
+from fairseq.models.nat.nat_base import NATTransformerModel
 from fairseq.util2 import new_arange
 
 
 @register_model('GLAT')
-class GLAT(NATransformerModel):
+class GLAT(NATTransformerModel):
 
-    def hamming_distance(self, reference, predict):
+    def hamming_distance(self, reference: Tensor, predict: Tensor):
         diff = (reference != predict).sum(-1).detach()
         return diff
 
@@ -73,7 +75,8 @@ class GLAT(NATransformerModel):
                                             prev_output_tokens=prev_output_tokens,
                                             encoder_out=encoder_out,
                                             step=0,
-                                            return_input=True
+                                            return_input=True,
+                                            inner=True
                                             )
         input_embedding = _decoder_out['return_input']
         logits = logits.detach()
@@ -106,6 +109,11 @@ class GLAT(NATransformerModel):
                 "factor": self.decoder.length_loss_factor
             }
         }
+
+    def forward_decoder(self, decoder_out, encoder_out, decoding_format=None, **kwargs):
+        kwargs['tgt_tokens'] = tgt_tokens
+        kwargs['extra_ret'] = False
+        super().forward_dcoder()
 
 
 @register_model_architecture("GLAT", "GLAT")
