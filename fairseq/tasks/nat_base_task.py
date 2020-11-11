@@ -6,10 +6,9 @@ from fairseq import utils
 from fairseq.data import (
     encoders,
 )
+from fairseq.nat_base_generator import reverse
 from fairseq.tasks import register_task
 from fairseq.tasks.translation_lev import TranslationLevenshteinTask
-
-from .generator import reverse
 
 EVAL_BLEU_ORDER = 4
 
@@ -47,7 +46,7 @@ class NATGenerationTask(TranslationLevenshteinTask):
     def build_generator(self, models, args):
         # add models input to match the API for SequenceGenerator
         # from fairseq.iterative_refinement_generator import IterativeRefinementGenerator
-        from .generator import NAGenerator
+        from fairseq.nat_base_generator import NAGenerator
         return NAGenerator(
             self.target_dictionary,
             eos_penalty=getattr(args, 'iter_decode_eos_penalty', 0.0),
@@ -58,7 +57,8 @@ class NATGenerationTask(TranslationLevenshteinTask):
             adaptive=not getattr(args, 'iter_decode_force_max_iter', False),
             retain_history=getattr(args, 'retain_iter_history', False),
             infer_with_tgt=getattr(args, "infer_with_tgt", False),
-            infer_with_reflen=getattr(args, "infer_with_reflen", False)
+            infer_with_reflen=getattr(args, "infer_with_reflen", False),
+            args=args
         )
 
     def build_model(self, args):

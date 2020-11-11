@@ -322,6 +322,13 @@ def get_parser(desc, default_task="translation"):
     parser.add_argument('--add-unk-embedding', action="store_true")
     parser.add_argument('--full-mask-steps', type=int, default=-1)
 
+    parser.add_argument('--iter-decode-eos-penalty', default=0.0, type=float, metavar='N',
+                        help='if > 0.0, it penalized early-stopping in decoding.')
+    parser.add_argument('--iter-decode-max-iter', default=10, type=int, metavar='N',
+                        help='maximum iterations for iterative refinement.')
+    parser.add_argument('--iter-decode-force-max-iter', action='store_true',
+                        help='if set, run exact the maximum number of iterations without early stop')
+
     from fairseq.registry import REGISTRIES
     for registry_name, REGISTRY in REGISTRIES.items():
         parser.add_argument(
@@ -667,12 +674,7 @@ def add_generation_args(parser):
     group.add_argument('--print-step', action='store_true')
 
     # arguments for iterative refinement generator
-    group.add_argument('--iter-decode-eos-penalty', default=0.0, type=float, metavar='N',
-                       help='if > 0.0, it penalized early-stopping in decoding.')
-    group.add_argument('--iter-decode-max-iter', default=10, type=int, metavar='N',
-                       help='maximum iterations for iterative refinement.')
-    group.add_argument('--iter-decode-force-max-iter', action='store_true',
-                       help='if set, run exact the maximum number of iterations without early stop')
+
     group.add_argument('--iter-decode-with-beam', default=1, type=int, metavar='N',
                        help='if > 1, model will generate translations varying by the lengths.')
     group.add_argument('--iter-decode-with-external-reranker', action='store_true',

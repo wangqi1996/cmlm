@@ -323,7 +323,9 @@ class NATransformerDecoder(FairseqNATDecoder):
         else:
             x, decoder_padding_mask = self.forward_embedding(prev_output_tokens)
 
+        # 神奇，居然不会有问题qaq
         input_embedding = x
+
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
         attn = None

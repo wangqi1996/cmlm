@@ -71,7 +71,7 @@ class GenericLMCriterion(LabelSmoothedDualImitationCriterion):
     def _compute_acc(self, acc, name="acc"):
         return {"name": name, "acc": acc}
 
-    def forward(self, model, sample, reduce=True):
+    def forward(self, model, sample, reduce=True, **kwargs):
         """Compute the loss for the given sample.
         Returns a tuple with three elements:
         1) the loss
@@ -87,7 +87,7 @@ class GenericLMCriterion(LabelSmoothedDualImitationCriterion):
         )
         tgt_tokens, prev_output_tokens = sample["target"], sample["prev_target"]
 
-        outputs = model(src_tokens, src_lengths, prev_output_tokens, tgt_tokens)
+        outputs = model(src_tokens, src_lengths, prev_output_tokens, tgt_tokens, sample=sample)
         losses, nll_loss = [], []
         accuracies = []
 

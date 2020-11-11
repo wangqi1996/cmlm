@@ -2,16 +2,16 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
+from torch import Tensor
+
 from fairseq import utils
+from fairseq.modules.nat_base_modules import FeedForward, RelativeSelfAttention, RelativePositionEmbeddings
 from fairseq.modules.transformer_layer import (
     TransformerDecoderLayer,
     MultiheadAttention,
     TransformerEncoderLayer,
     LayerNorm
 )
-from torch import Tensor
-
-from .modules import FeedForward, RelativeSelfAttention, RelativePositionEmbeddings
 
 
 def build_relative_embeddings(args, embedding_dim=None):
@@ -41,7 +41,7 @@ class BlockedEncoderLayer(TransformerEncoderLayer):
         self.self_attn_layer_norm = LayerNorm(self.embed_dim, eps=getattr(args, "layer_norm_eps", 1e-5))
         self.final_layer_norm = LayerNorm(self.embed_dim, eps=getattr(args, "layer_norm_eps", 1e-5))
 
-    def build_self_attention(self, embed_dim, args):
+    def build_self_attention(self, embed_dim, args, **kwargs):
         if getattr(args, "enc_self_attn_cls", "abs") == "abs":
             return MultiheadAttention(
                 embed_dim,
@@ -142,7 +142,7 @@ class BlockedDecoderLayer(TransformerDecoderLayer):
         if self.encoder_attn_layer_norm is not None:
             self.encoder_attn_layer_norm = LayerNorm(self.embed_dim, eps=getattr(args, "layer_norm_eps", 1e-5))
 
-    def build_self_attention(self, embed_dim, args, add_bias_kv=False, add_zero_attn=False):
+    def build_self_attention(self, embed_dim, args, add_bias_kv=False, add_zero_attn=False, **kwargs):
         if getattr(args, "self_attn_cls", "abs") == "abs":
             return MultiheadAttention(
                 embed_dim,

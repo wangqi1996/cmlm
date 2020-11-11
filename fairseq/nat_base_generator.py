@@ -3,6 +3,7 @@ from itertools import groupby
 
 import numpy as np
 import torch
+
 from fairseq import utils
 from fairseq.data.dictionary import Dictionary
 from fairseq.iterative_refinement_generator import IterativeRefinementGenerator
@@ -69,6 +70,7 @@ class NAGenerator(IterativeRefinementGenerator):
             reranking=False,
             infer_with_tgt=False,
             infer_with_reflen=False,
+            args=None
     ):
         super().__init__(
             tgt_dict, models, eos_penalty,
@@ -79,7 +81,8 @@ class NAGenerator(IterativeRefinementGenerator):
             retain_dropout=retain_dropout,
             adaptive=adaptive,
             retain_history=retain_history,
-            reranking=reranking
+            reranking=reranking,
+            args=args
         )
         self.infer_with_tgt = infer_with_tgt
         self.infer_with_reflen = infer_with_reflen or infer_with_tgt
@@ -171,6 +174,8 @@ class NAGenerator(IterativeRefinementGenerator):
                 "alignment": alignment,
             }
 
+        # TODO
+        self.max_iter = 0
         for step in range(self.max_iter + 1):
             decoder_options = {
                 "eos_penalty": self.eos_penalty,

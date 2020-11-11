@@ -2,56 +2,126 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
+import random
+
 import torch
 from torch import Tensor
 
+from fairseq.dep import DepLayerTree
 from fairseq.models import register_model_architecture, register_model
-from fairseq.models.nat import base_architecture
-from fairseq.models.nat.nat_base import NATTransformerModel
-from fairseq.util2 import new_arange
+from fairseq.util2 import get_base_mask, new_arange
+from .nat_base import NAT, nat_iwslt16_de_en
 
 
 @register_model('GLAT')
-class GLAT(NATTransformerModel):
+class GLAT(NAT):
+
+    def __init__(self, args, encoder, decoder):
+        super().__init__(args, encoder, decoder)
+        self.mask_method = args.mask_method
+
+        if self.mask_method == "layer":
+            self.dependency_tree = DepLayerTree(valid_subset=self.args.valid_subset)
+
+    def add_args(parser):
+        NAT.add_args(parser)
+
+        parser.add_argument('--mask-method', default="random")  # random、layer
 
     def hamming_distance(self, reference: Tensor, predict: Tensor):
-        diff = (reference != predict).sum(-1).detach()
+        reference_mask = get_base_mask(reference)
+
+        diff = ((reference != predict) & reference_mask).sum(-1).detach()
+
         return diff
 
     def get_ratio(self, update_num, max_steps):
-        return update_num / max_steps + 0.1
+        return 0.5
 
-    def random_mask(self, target_tokens, mask_num, input):
-        """
-        GLAT的构造input的办法
-        """
-        pad = self.tgt_dict.pad()
-        bos = self.tgt_dict.bos()
-        eos = self.tgt_dict.eos()
-        unk = self.tgt_dict.unk()
+    def get_mask_num(self, reference, predict):
+        distance = self.hamming_distance(reference, predict)
+        ratio = self.get_ratio(None, None)
 
-        target_masks = target_tokens.ne(pad) & \
-                       target_tokens.ne(bos) & \
-                       target_tokens.ne(eos)
-        target_score = target_tokens.clone().float().uniform_()
-        target_score.masked_fill_(~target_masks, 2.0)
-        target_length = mask_num
-        target_length = target_length + 1  # make sure to mask at least one token.
+        mask_num = distance * ratio  # 使用reference的数目 == 不使用decoder input的数目
+        return mask_num
+
+    def get_mask_output(self, mask_length=None, reference=None, samples=None, encoder_out=None, decoder_input=None):
+
+        reference_embedding, _, _ = self.decoder.forward_embedding(reference)
+
+        kwargs = {
+            "mask_length": mask_length,
+            "reference": reference,
+            "samples": samples,
+            "encoder_out": encoder_out,
+            "decoder_input": decoder_input,
+            "reference_embedding": reference_embedding
+        }
+        if self.mask_method == "random":
+            return self.get_random_mask_output(**kwargs)
+        elif self.mask_method == "layer":
+            return self.get_layer_mask_output(**kwargs)
+
+    def get_layer_mask_output(self, mask_length=None, reference=None, samples=None, encoder_out=None,
+                              decoder_input=None, reference_embedding=None):
+
+        sample_ids = samples['id'].cpu().tolist()
+        mask = reference.new_empty(reference.size(), requires_grad=False).fill_(False).bool()
+
+        for index, id in enumerate(sample_ids):
+            mask_num = mask_length[index]
+            mask = self.layer_mask(mask_num, sample_id=id, mask=mask, sentence_index=index)
+
+        return self._mask(mask, reference_embedding, decoder_input, reference)
+
+    def layer_mask(self, mask_num, sample_id, mask, sentence_index):
+        """
+        随机mask多层, 随机扰动多层
+        """
+        dependency_layers = self.dependency_tree.get_one_sentence(sample_id, self.training)
+
+        num = 0
+        layers = list(range(len(dependency_layers)))
+        random.shuffle(layers)
+        for layer in layers:
+            if num >= mask_num:
+                break
+            for token_index in dependency_layers[layer]:
+                if num >= mask_num:
+                    break
+                mask[sentence_index][token_index] = True
+                num += 1
+
+        return mask
+
+    def _mask(self, mask, reference_embedding, decoder_input, reference):
+        non_mask = ~mask
+        full_mask = torch.cat((non_mask.unsqueeze(-1), mask.unsqueeze(-1)), dim=-1)
+
+        # 处理token
+        predict_unk = reference.new_empty(reference.shape, requires_grad=False).fill_(
+            self.tgt_dict.unk())
+        full_output_tokens = torch.cat((predict_unk.unsqueeze(-1), reference.unsqueeze(-1)), dim=-1)
+        output_tokens = (full_output_tokens * full_mask).sum(-1).long()
+
+        # 处理embedding
+        full_embedding = torch.cat((decoder_input.unsqueeze(-1), reference_embedding.unsqueeze(-1)), dim=-1)
+        output_emebdding = (full_embedding * full_mask.unsqueeze(-2)).sum(-1)
+
+        return output_tokens, output_emebdding
+
+    def get_random_mask_output(self, mask_length=None, reference=None, samples=None, encoder_out=None,
+                               decoder_input=None, reference_embedding=None):
+        reference_mask = get_base_mask(reference)
+
+        target_score = reference.clone().float().uniform_()
+        target_score.masked_fill_(~reference_mask, 2.0)
 
         _, target_rank = target_score.sort(1)
-        target_cutoff = new_arange(target_rank) < target_length[:, None].long()
-        mask = target_cutoff.scatter(1, target_rank, target_cutoff)
-        prev_target_tokens = target_tokens.masked_fill(mask, unk)
+        target_cutoff = new_arange(target_rank) < mask_length[:, None].long()
+        mask = target_cutoff.scatter(1, target_rank, target_cutoff)  # [b, l]
 
-        # cover
-        prev_target_embedding, _ = self.decoder.forward_embedding(prev_target_tokens)
-
-        new_embedding = torch.cat((prev_target_embedding.unsqueeze(-1), input.unsqueeze(-1)), dim=-1)
-        mask = mask.unsqueeze(-1).unsqueeze(-1)
-        new_mask = torch.cat((~mask, mask), dim=-1)
-        embedding = (new_embedding * new_mask).sum(-1)
-
-        return embedding, prev_target_tokens
+        return self._mask(mask, reference_embedding, decoder_input, reference)
 
     def forward(
             self, src_tokens, src_lengths, prev_output_tokens, tgt_tokens, **kwargs
@@ -64,58 +134,58 @@ class GLAT(NATTransformerModel):
         4. hidden state和word embedding混合
         """
         # encoding
-        encoder_out = self.encoder(src_tokens, src_lengths=src_lengths)
-
-        # length prediction
-        length_out = self.decoder.forward_length(normalize=False, encoder_out=encoder_out)
-        length_tgt = self.decoder.forward_length_prediction(length_out, encoder_out, tgt_tokens)
-
-        # first step decoding  使用embedding copy
-        logits, _decoder_out = self.decoder(normalize=False,
-                                            prev_output_tokens=prev_output_tokens,
-                                            encoder_out=encoder_out,
-                                            step=0,
-                                            return_input=True,
-                                            inner=True
-                                            )
-        input_embedding = _decoder_out['return_input']
-        logits = logits.detach()
-        score, predict_word = logits.max(-1)
-
-        # 计算hamming距离
-        reference = kwargs['sample']['target']
-        mask_num = self.hamming_distance(reference=reference, predict=predict_word).int()
-        if self.training:
-            mask_num = mask_num * self.get_ratio(update_num=kwargs['update_nums'], max_steps=self.args.max_update)
-
-        prev_target_embedding, prev_output_tokens = self.random_mask(reference, mask_num, input_embedding)
+        encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, return_all_hiddens=True, **kwargs)
 
         # decoding
-        word_ins_out = self.decoder(
+        word_ins_out, other = self.decoder(
             normalize=False,
             prev_output_tokens=prev_output_tokens,
             encoder_out=encoder_out,
-            prev_target_embedding=prev_target_embedding,
-            step=1)
+            inner=True
+        )
+        word_ins_out.detach_()
+        _score, predict = word_ins_out.max(-1)
+        mask_num = self.get_mask_num(tgt_tokens, predict)
 
-        return {
+        decoder_input = other['embedding']
+        samples = kwargs['sample']
+        output_token, output_embedding = self.get_mask_output(decoder_input=decoder_input, reference=tgt_tokens,
+                                                              mask_length=mask_num, samples=samples, encoder_out=None)
+
+        # decoder
+        word_ins_out, other = self.decoder(
+            normalize=False,
+            prev_output_tokens=output_token,
+            encoder_out=encoder_out,
+            inner=True,
+            prev_target_embedding=output_embedding
+
+        )
+
+        # 计算hamming距离
+
+        losses = {
             "word_ins": {
-                "out": word_ins_out, "tgt": tgt_tokens,
-                "mask": prev_output_tokens.eq(self.unk), "ls": self.args.label_smoothing,
+                "out": word_ins_out,
+                "tgt": tgt_tokens,
+                "mask": tgt_tokens.ne(self.pad),
+                "ls": self.args.label_smoothing,
                 "nll_loss": True
-            },
-            "length": {
-                "out": length_out, "tgt": length_tgt,
-                "factor": self.decoder.length_loss_factor
             }
         }
+        # length prediction
+        if self.decoder.length_loss_factor > 0:
+            length_out = self.decoder.forward_length(normalize=False, encoder_out=encoder_out)
+            length_tgt = self.decoder.forward_length_prediction(length_out, encoder_out, tgt_tokens)
+            losses["length"] = {
+                "out": length_out,
+                "tgt": length_tgt,
+                "factor": self.decoder.length_loss_factor
+            }
 
-    def forward_decoder(self, decoder_out, encoder_out, decoding_format=None, **kwargs):
-        kwargs['tgt_tokens'] = tgt_tokens
-        kwargs['extra_ret'] = False
-        super().forward_dcoder()
+        return losses
 
 
-@register_model_architecture("GLAT", "GLAT")
-def GLAT(args):
-    base_architecture(args)
+@register_model_architecture('GLAT', 'GLAT_iwslt16_de_en')
+def glat_iwslt16_de_en(args):
+    nat_iwslt16_de_en(args)
