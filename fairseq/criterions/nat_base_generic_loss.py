@@ -87,9 +87,13 @@ class GenericLMCriterion(LabelSmoothedDualImitationCriterion):
         )
         tgt_tokens, prev_output_tokens = sample["target"], sample["prev_target"]
 
-        outputs = model(src_tokens, src_lengths, prev_output_tokens, tgt_tokens, sample=sample)
+        outputs = model(src_tokens, src_lengths, prev_output_tokens, tgt_tokens, sample=sample, **kwargs)
         losses, nll_loss = [], []
         accuracies = []
+
+        train_need = None
+        if "train_need" in outputs:
+            train_need = outputs.pop('train_need')
 
         for obj in outputs:
             if outputs[obj].get("loss", None) is None:
@@ -137,6 +141,8 @@ class GenericLMCriterion(LabelSmoothedDualImitationCriterion):
             "ntokens": ntokens,
             "nsentences": nsentences,
             "sample_size": sample_size,
+            "train_need": train_need,
+            "need_print": train_need.get('print', {}) if train_need is not None else {}
         }
 
         for l in losses:
@@ -174,3 +180,14 @@ class GenericLMCriterion(LabelSmoothedDualImitationCriterion):
             elif "acc" in key:
                 val = sum([log.get(key, Accuracy()) for log in logging_outputs], Accuracy())
                 metrics.log_scalar(key, val.score, sample_size, round=2)
+
+        if logging_outputs[0].get('need_print', None) is not None:
+            if "all_predict_head" in logging_outputs[0]['need_print']:
+                all_predict_head = sum(log['need_print'].get("all_predict_head") for log in logging_outputs)
+                correct_predict_head = sum(log['need_print'].get("correct_predict_head") for log in logging_outputs)
+                # print(correct_predict_head / all_predict_head)
+                metrics.log_scalar('dep_accuracy', correct_predict_head / all_predict_head, weight=all_predict_head,
+                                   round=3)
+            if "mask_ratio" in logging_outputs[0]['need_print']:
+                mask_ratio = utils.item(sum(log['need_print']['mask_ratio'] for log in logging_outputs))
+                metrics.log_scalar('mask_ratio', mask_ratio, weight=0, priority=300)

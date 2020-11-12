@@ -12,6 +12,7 @@ from .DEP_GLAT import *
 from .DEP_GLAT_joint import *
 from .DEP_GLAT_nojoint import *
 from .nonauto_dep_relative_transformer import *
-from .dep_glat_relative import *
 from .nat_base import *
 from .GLAT import *
+from .dep_relative_nat import *
+from .dep_classifier import *

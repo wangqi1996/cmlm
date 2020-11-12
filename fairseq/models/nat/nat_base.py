@@ -88,11 +88,11 @@ class NAT(NATransformerModel):
         parser.add_argument("--ptrn-embed-mode", type=int, default=0, help="0 is None, 1 is finetuning, 2 is fixed")
         parser.add_argument("--no-share-dec-input-output", action='store_true')
         parser.add_argument("--block-cls", type=str, default="None")
-        parser.add_argument("--self-attn-cls", type=str, default="abs") # dep_1
+        parser.add_argument("--self-attn-cls", type=str, default="abs")  # dep_1
         parser.add_argument("--enc-block-cls", type=str, default="abs")
         parser.add_argument("--enc-self-attn-cls", type=str, default="abs")
         parser.add_argument("--dec-block-cls", type=str, default="abs")
-        parser.add_argument("--dec-self-attn-cls", type=str, default="abs") # dep_1
+        parser.add_argument("--dec-self-attn-cls", type=str, default="abs")  # dep_1
         parser.add_argument("--max-rel-positions", type=int, default=4)
         parser.add_argument("--share-rel-embeddings", action='store_true')
         parser.add_argument("--layer-norm-eps", type=float, default=1e-5)
@@ -260,8 +260,8 @@ class NAT(NATransformerModel):
             prev_output_tokens=output_tokens,
             encoder_out=encoder_out,
             step=step,
-            tgt_tokens=kwargs.get("tgt_tokens", None),
             extra_ret=False,
+            **kwargs,
         ).max(-1)
         # try:
         output_tokens.masked_scatter_(output_masks, _tokens[output_masks])
@@ -355,6 +355,12 @@ class NAT(NATransformerModel):
             output_scores=initial_output_scores
         )
 
+    def inference_special_input(self, special_input, not_terminated):
+        return {}
+
+    def get_special_input(self, samples):
+        return {}
+
 
 class NATEncoder(TransformerEncoder):
 
@@ -423,8 +429,8 @@ class NATDecoder(NATransformerDecoder):
                 self.layers = nn.ModuleList([])
             self.layers.extend(
                 [
-                    self.build_decoder_layer(args, no_encoder_attn, rel_keys, rel_vals)
-                    for _ in range(args.decoder_layers)
+                    self.build_decoder_layer(args, no_encoder_attn, rel_keys, rel_vals, layer_id=layer_id)
+                    for layer_id in range(args.decoder_layers)
                 ]
             )
 
@@ -537,7 +543,7 @@ class NATDecoder(NATransformerDecoder):
             prev_output_tokens,
             encoder_out=encoder_out,
             embedding_copy=(step == 0) & self.src_embedding_copy,
-            prev_target_embedding=unused.get('prev_target_embedding', None)
+            **unused
         )
         decoder_out = self.output_layer(features)
         decoder_out = F.log_softmax(decoder_out, -1) if normalize else decoder_out
@@ -556,8 +562,9 @@ class NATDecoder(NATransformerDecoder):
             **unused
     ):
 
-        x, decoder_padding_mask, _ = self.forward_decoder_inputs(prev_output_tokens, encoder_out=encoder_out,
-                                                                 prev_target_embedding=prev_target_embedding)
+        x, decoder_padding_mask, position = self.forward_decoder_inputs(prev_output_tokens, encoder_out=encoder_out,
+                                                                        prev_target_embedding=prev_target_embedding)
+
         embedding = x.clone()
         x = x.transpose(0, 1)
         attn = None
@@ -576,6 +583,7 @@ class NATDecoder(NATransformerDecoder):
                 encoder_out.encoder_padding_mask if encoder_out is not None else None,
                 self_attn_mask=None,
                 self_attn_padding_mask=decoder_padding_mask,
+                **unused
             )
             inner_states.append(x)
 
@@ -588,7 +596,7 @@ class NATDecoder(NATransformerDecoder):
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
 
-        return x, {"attn": attn, "inner_states": inner_states, "embedding": embedding}
+        return x, {"attn": attn, "inner_states": inner_states, "embedding": embedding, "position_embedding": position}
 
     def forward_decoder_inputs(self, prev_output_tokens, encoder_out=None, add_position=True, **unused):
         # forward source representation

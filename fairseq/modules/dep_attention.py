@@ -16,9 +16,9 @@ def generate_dependency_matrix(dependency_mat, index=None, cache=False):
     """Generate the clipped relative positions matrix
        for a given length and maximum relative positions"""
 
-    # dependency_mat矩阵可以在不同的层复用。
-    if cache:
-        dependency_mat = dependency_mat[index]
+    # # dependency_mat矩阵可以在不同的层复用。
+    # if cache:
+    #     dependency_mat = dependency_mat[index]
 
     return dependency_mat
 
@@ -45,8 +45,6 @@ class DepRelativeMultiheadAttention(MultiheadAttention):
 
     def __init__(
             self,
-            max_relative_position=16,
-            relative_direction=True,
             **kwargs
     ):
         super().__init__(**kwargs)

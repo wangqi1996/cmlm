@@ -7,10 +7,11 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from fairseq import utils
-from fairseq.modules.multihead_attention import MultiheadAttention
 from torch import Tensor
 from torch.nn import Parameter
+
+from fairseq import utils
+from fairseq.modules.multihead_attention import MultiheadAttention
 
 
 class RelativePositionEmbeddings(nn.Module):
@@ -143,6 +144,7 @@ class RelativeSelfAttention(MultiheadAttention):
             attn_mask: Optional[Tensor] = None,
             before_softmax: bool = False,
             need_head_weights: bool = False,
+            **kwargs
     ) -> Tuple[Tensor, Optional[Tensor]]:
 
         if need_head_weights:

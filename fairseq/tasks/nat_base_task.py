@@ -2,6 +2,8 @@ import json
 import logging
 from argparse import Namespace
 
+import torch
+
 from fairseq import utils
 from fairseq.data import (
     encoders,
@@ -140,7 +142,13 @@ class NATGenerationTask(TranslationLevenshteinTask):
             return sacrebleu.corpus_bleu(hyps, [refs])
 
     def valid_step(self, sample, model, criterion):
-        loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
+        model.eval()
+        with torch.no_grad():
+            sample['prev_target'] = self.inject_noise(sample['target'], None)
+            special_input = model.get_special_input(sample)
+            loss, sample_size, logging_output = criterion(model, sample, eval_accuracy=self.args.eval_accuracy,
+                                                          **special_input)
+
         if self.args.eval_bleu:
             bleu = self._inference_with_bleu(self.sequence_generator, sample, model)
             logging_output['_bleu_sys_len'] = bleu.sys_len

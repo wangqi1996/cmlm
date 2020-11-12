@@ -92,14 +92,14 @@ class DepChildTree(DepTree):
 
         if not only_valid:
             train_dependency_tree_child = load_dependency_tree(
-                "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency_child.train.log",
+                "/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_child.train.log",
                 add_one=True
             )  # 节点index index从0开始计数，孩子节点编号从1开始计数。
         else:
             train_dependency_tree_child = None
 
         valid_dependency_tree_child = load_dependency_tree(
-            "/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency_child." + str(
+            "/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_child." + str(
                 valid_subset) + ".log",
             add_one=True
         )
@@ -131,13 +131,13 @@ class DepHeadTree(DepTree):
 
         if not only_valid:
             train_dependency_tree_head = load_dependency_head_tree(
-                dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency_head.train.log",
+                dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_head.train.log",
                 add_one=True)  # head[i]=j， 节点i的父节点是节点j，i从0开始（下标） j从1开始。
         else:
             train_dependency_tree_head = None
 
         valid_dependency_tree_head = load_dependency_head_tree(
-            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency_head." + str(
+            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_head." + str(
                 valid_subset) + ".log",
             add_one=True)
 
@@ -158,7 +158,7 @@ def get_dependency_mat(head_tree: DepHeadTree, child_tree: DepChildTree, sample_
     start = 1
 
     batch_size, seq_len = token_tensor.size()
-    dep_tensor = token_tensor.new_zeros(size=token_tensor.size()).unsqueeze(-1).repeat(1, 1, seq_len)
+    dep_tensor = token_tensor.new_zeros(size=token_tensor.size()).unsqueeze(-1).repeat(1, 1, seq_len) # pad=0
 
     for index, id in enumerate(sample_ids):
         head = head_tree.get_one_sentence(id, training)
@@ -222,7 +222,7 @@ def get_coarse_dependency_mat(head_tree: DepHeadTree, child_tree: DepChildTree, 
     start = 1
 
     batch_size, seq_len = token_tensor.size()
-    dep_tensor = token_tensor.new_zeros(size=token_tensor.size()).unsqueeze(-1).repeat(1, 1, seq_len)
+    dep_tensor = token_tensor.new_zeros(size=token_tensor.size()).unsqueeze(-1).repeat(1, 1, seq_len)  # pad=0
 
     for index, id in enumerate(sample_ids):
         head = head_tree.get_one_sentence(id, training)

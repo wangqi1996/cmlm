@@ -23,6 +23,7 @@ class GLAT(NAT):
         if self.mask_method == "layer":
             self.dependency_tree = DepLayerTree(valid_subset=self.args.valid_subset)
 
+    @staticmethod
     def add_args(parser):
         NAT.add_args(parser)
 
@@ -141,7 +142,8 @@ class GLAT(NAT):
             normalize=False,
             prev_output_tokens=prev_output_tokens,
             encoder_out=encoder_out,
-            inner=True
+            inner=True,
+            **kwargs
         )
         word_ins_out.detach_()
         _score, predict = word_ins_out.max(-1)
@@ -158,8 +160,8 @@ class GLAT(NAT):
             prev_output_tokens=output_token,
             encoder_out=encoder_out,
             inner=True,
-            prev_target_embedding=output_embedding
-
+            prev_target_embedding=output_embedding,
+            **kwargs
         )
 
         # 计算hamming距离

@@ -119,7 +119,7 @@ class BlockedEncoderLayer(TransformerEncoderLayer):
 class BlockedDecoderLayer(TransformerDecoderLayer):
     def __init__(
             self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False,
-            relative_keys=None, relative_vals=None
+            relative_keys=None, relative_vals=None, **kwargs
     ):
         super().__init__(args, no_encoder_attn, add_bias_kv, add_zero_attn)
         self.ffn_block = FeedForward(
@@ -136,6 +136,7 @@ class BlockedDecoderLayer(TransformerDecoderLayer):
             args,
             add_bias_kv=add_bias_kv,
             add_zero_attn=add_zero_attn,
+            **kwargs
         )
         self.self_attn_layer_norm = LayerNorm(self.embed_dim, eps=getattr(args, "layer_norm_eps", 1e-5))
         self.final_layer_norm = LayerNorm(self.embed_dim, eps=getattr(args, "layer_norm_eps", 1e-5))
@@ -178,6 +179,7 @@ class BlockedDecoderLayer(TransformerDecoderLayer):
             self_attn_padding_mask: Optional[torch.Tensor] = None,
             need_attn: bool = False,
             need_head_weights: bool = False,
+            **kwargs
     ):
 
         if need_head_weights:
@@ -230,6 +232,7 @@ class BlockedDecoderLayer(TransformerDecoderLayer):
                 incremental_state=incremental_state,
                 need_weights=False,
                 attn_mask=self_attn_mask,
+                **kwargs
             )
         else:
             index = utils.new_arange(x, x.size(0))
@@ -245,6 +248,7 @@ class BlockedDecoderLayer(TransformerDecoderLayer):
                 incremental_state=incremental_state,
                 need_weights=False,
                 attn_mask=self_attn_mask,
+                **kwargs
             )
 
         x = self.dropout_module(x)

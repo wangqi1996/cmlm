@@ -174,6 +174,11 @@ class NAGenerator(IterativeRefinementGenerator):
                 "alignment": alignment,
             }
 
+        special_input = sample.get('special_input', None)
+        if special_input is None:
+            sample['prev_target'] = prev_output_tokens
+            special_input = model.get_special_input(sample)
+
         # TODO
         self.max_iter = 0
         for step in range(self.max_iter + 1):
@@ -183,6 +188,9 @@ class NAGenerator(IterativeRefinementGenerator):
                 "decoding_format": self.decoding_format,
                 "tgt_tokens": tgt_tokens if self.infer_with_tgt else None
             }
+            if special_input is not None:
+                decoder_options.update(special_input)
+
             prev_decoder_out = prev_decoder_out._replace(
                 step=step,
                 max_step=self.max_iter + 1,
@@ -258,6 +266,8 @@ class NAGenerator(IterativeRefinementGenerator):
             encoder_out = model.encoder.reorder_encoder_out(encoder_out, not_terminated.nonzero().squeeze())
             sent_idxs = sent_idxs[not_terminated]
             prev_output_tokens = prev_decoder_out.output_tokens.clone()
+
+            special_input = model.inference_special_input(special_input, not_terminated)
 
         if self.beam_size > 1:
             if reranker is not None:
