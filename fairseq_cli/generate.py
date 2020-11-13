@@ -20,7 +20,7 @@ from fairseq.data import encoders
 from fairseq.logging import progress_bar
 from fairseq.logging.meters import StopwatchMeter, TimeMeter
 from fairseq.util2 import init_global_count_tokens, get_step_value, get_probability, compute_kl, get_value1, get_value2, \
-    get_diff_tokens, get_all_tokens
+    get_diff_tokens, get_all_tokens, get_value3
 
 
 def main(args):
@@ -275,6 +275,7 @@ def _main(args, output_file):
     #     print(get_all_tokens())
     print(get_value1())
     print(get_value2())
+    print(get_value3())
     print(get_diff_tokens())
     print(get_all_tokens())
     if get_all_tokens() > 0:

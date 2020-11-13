@@ -210,6 +210,12 @@ def init_global_count_tokens():
     VALUE2 = 0
     global VALUE3
     VALUE3 = 0
+    global VALUE4
+    VALUE4 = 0
+    global VALUE5
+    VALUE5 = 0
+    global VALUE6
+    VALUE6 = 0
     global STEP_CORRECT_TOKENS
     STEP_CORRECT_TOKENS = {}
 
@@ -232,6 +238,21 @@ def set_value2(value):
 def set_value3(value):
     global VALUE3
     VALUE3 += value
+
+
+def set_value4(value):
+    global VALUE4
+    VALUE4 += value
+
+
+def set_value5(value):
+    global VALUE5
+    VALUE5 += value
+
+
+def set_value6(value):
+    global VALUE6
+    VALUE6 += value
 
 
 def set_all_token(value):
@@ -268,6 +289,18 @@ def get_value2():
 
 def get_value3():
     return VALUE3
+
+
+def get_value4():
+    return VALUE4
+
+
+def get_value5():
+    return VALUE5
+
+
+def get_value6():
+    return VALUE6
 
 
 def get_all_tokens():

@@ -144,6 +144,19 @@ class DepHeadTree(DepTree):
         return train_dependency_tree_head, valid_dependency_tree_head
 
 
+def get_model_dependency_mat(head_tree, child_tree, dep_mat_grain, sample_ids, target_token, training):
+    dependency_mat = None
+    if head_tree is not None and child_tree is not None:
+        if dep_mat_grain == "fine":
+            dependency_mat = get_dependency_mat(head_tree, child_tree, sample_ids, training,
+                                                target_token)
+        elif dep_mat_grain == "coarse":
+            dependency_mat = get_coarse_dependency_mat(head_tree, child_tree, sample_ids, training,
+                                                       target_token, contain_eos=True)
+
+    return dependency_mat
+
+
 def get_dependency_mat(head_tree: DepHeadTree, child_tree: DepChildTree, sample_ids, training,
                        token_tensor: torch.Tensor, contain_eos=False):
     """token_tensor,需要区分AT和NAT,AT移除了bos
@@ -158,7 +171,7 @@ def get_dependency_mat(head_tree: DepHeadTree, child_tree: DepChildTree, sample_
     start = 1
 
     batch_size, seq_len = token_tensor.size()
-    dep_tensor = token_tensor.new_zeros(size=token_tensor.size()).unsqueeze(-1).repeat(1, 1, seq_len) # pad=0
+    dep_tensor = token_tensor.new_zeros(size=token_tensor.size()).unsqueeze(-1).repeat(1, 1, seq_len)  # pad=0
 
     for index, id in enumerate(sample_ids):
         head = head_tree.get_one_sentence(id, training)

@@ -3,10 +3,10 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from fairseq.dep import DepChildTree, DepHeadTree, get_dependency_mat, get_coarse_dependency_mat
+from fairseq.dep import DepChildTree, DepHeadTree, get_model_dependency_mat
 from fairseq.models import register_model_architecture, register_model
-from fairseq.models.nat import GLAT, BlockedDecoderLayer, DepRelativeMultiheadAttention, NATDecoder, init_bert_params, \
-    build_relative_embeddings
+from fairseq.models.nat import BlockedDecoderLayer, DepRelativeMultiheadAttention, NATDecoder, init_bert_params, \
+    build_relative_embeddings, NAT, DepCoarseClassifier
 from .nat_base import nat_iwslt16_de_en
 
 
@@ -49,9 +49,14 @@ class DEPRelativeDecoder(NATDecoder):
                                            layer_id=layer_id, **kwargs)
 
 
-@register_model('dep_relative_glat')
-class DEPRelativeGLAT(GLAT):
+SuperClass, model_name = NAT, "dep_relative_nat"
 
+
+# SuperClass, model_name = GLAT, "dep_relative_GLAT"
+
+
+@register_model(model_name)
+class DEPRelativeNAT(SuperClass):
     @classmethod
     def build_decoder(cls, args, tgt_dict, embed_tokens):
         decoder = DEPRelativeDecoder(args, tgt_dict, embed_tokens)
@@ -62,31 +67,25 @@ class DEPRelativeGLAT(GLAT):
     def __init__(self, args, encoder, decoder):
         super().__init__(args, encoder, decoder)
 
-        self.child_tree = DepChildTree(valid_subset=self.args.valid_subset)
-        self.head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
+        if getattr(self, "child_tree", None) is None:
+            self.child_tree = DepChildTree(valid_subset=self.args.valid_subset)
+        if getattr(self, "head_tree", None) is None:
+            self.head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
 
         self.dep_mat_grain = getattr(args, "dep_mat_grain", "fine")
         print(self.dep_mat_grain)
 
+        if getattr(self, "predict_dep_relative", False):
+            self.dep_classifier = DepCoarseClassifier(args)
+
     def add_args(parser):
-        GLAT.add_args(parser)
+        SuperClass.add_args(parser)
 
         parser.add_argument('--relative-direction', default=True)
         parser.add_argument('--dep-mat-grain', type=str, default="coarse", choices=['fine', 'coarse'])
         parser.add_argument('--relative-layers', type=str, default="0")
-
-    def get_dependency_mat(self, sample_ids, target_token):
-        if self.head_tree is not None and self.child_tree is not None:
-            if self.dep_mat_grain == "fine":
-                dependency_mat = get_dependency_mat(self.head_tree, self.child_tree, sample_ids, self.training,
-                                                    target_token)
-            elif self.dep_mat_grain == "coarse":
-                dependency_mat = get_coarse_dependency_mat(self.head_tree, self.child_tree, sample_ids, self.training,
-                                                           target_token, contain_eos=True)
-        else:
-            dependency_mat = None
-
-        return dependency_mat
+        parser.add_argument('--predict-dep-relative', action="store_true")
+        parser.add_argument('--predict-dep-relative-layer', type=int, default=-2)
 
     def inference_special_input(self, special_input, not_terminated):
         keys = ['dependency_mat']
@@ -98,12 +97,14 @@ class DEPRelativeGLAT(GLAT):
         return special_input
 
     def get_special_input(self, samples):
-        dependency_mat = self.get_dependency_mat(samples["id"].cpu().tolist(),
-                                                 samples['prev_target'],
-                                                 )
+
+        sample_ids = samples['id']
+        target_token = samples['prev_target']
+        dependency_mat = get_model_dependency_mat(self.head_tree, self.child_tree, self.dep_mat_grain, sample_ids,
+                                                  target_token, self.training)
         return {"dependency_mat": dependency_mat}
 
 
-@register_model_architecture('dep_relative_glat', 'dep_relative_glat_iwslt16_de_en')
+@register_model_architecture(model_name, model_name + '_iwslt16_de_en')
 def dep_relative_glat_iwslt16_de_en(args):
     nat_iwslt16_de_en(args)
