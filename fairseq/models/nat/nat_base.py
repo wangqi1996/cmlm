@@ -2,8 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.init import orthogonal_
+from torch.serialization import default_restore_location
 
 from fairseq.dep import DepChildTree, DepHeadTree, get_dependency_mat, get_coarse_dependency_mat
+from fairseq.file_io import PathManager
 from fairseq.models import BaseFairseqModel
 from fairseq.models.nat.nonautoregressive_transformer import (
     DecoderOut,
@@ -17,7 +19,7 @@ from fairseq.models.nat.nonautoregressive_transformer import (
 )
 from fairseq.models.transformer import TransformerEncoder
 from fairseq.modules import LayerDropModuleList
-from fairseq.modules.nat_base_layer import BlockedDecoderLayer, ContentTrainer, BlockedEncoderLayer
+from fairseq.modules.nat_base_layer import BlockedDecoderLayer, BlockedEncoderLayer
 from fairseq.modules.nat_base_modules import RelativePositionEmbeddings
 
 INF = 1e10
@@ -79,7 +81,7 @@ def build_relative_embeddings(args, embedding_dim=None):
 
 
 class DepCoarseClassifier(BaseFairseqModel):
-    def __init__(self, args):
+    def __init__(self, args, head_tree=None, child_tree=None):
         super().__init__()
         self.args = args
 
@@ -87,13 +89,23 @@ class DepCoarseClassifier(BaseFairseqModel):
             torch.empty(self.args.decoder_embed_dim * 2, self.args.decoder_embed_dim * 2).cuda()
         ), requires_grad=True)
 
-        self.child_tree = DepChildTree(valid_subset=self.args.valid_subset)
-        self.head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
+        if child_tree is None:
+            self.child_tree = DepChildTree(valid_subset=self.args.valid_subset)
+        else:
+            self.child_tree = child_tree
+
+        if head_tree is None:
+            self.head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
+        else:
+            self.head_tree = head_tree
 
         self.dep_mat_grain = getattr(args, "dep_mat_grain", "fine")
         print(self.dep_mat_grain)
 
         self.loss = nn.BCEWithLogitsLoss(reduction="none")
+
+        if getattr(args, "load_checkpoint", "") != "":
+            self.load_parameters(self.args.load_checkpoint)
 
     def get_dependency_mat(self, sample_ids, target_token):
         if self.head_tree is not None and self.child_tree is not None:
@@ -115,7 +127,7 @@ class DepCoarseClassifier(BaseFairseqModel):
         :param sample:
         :return:
         """
-        predict, target = self.predict(hidden_state, position_embedding, sample, reference)  # predict: =2的概率
+        _, predict, target = self.predict(hidden_state, position_embedding, sample, reference)  # predict: =2的概率
         loss = self.loss(predict, (target - 1).float())
         loss = self.mean_ds(loss)
         return {"dep_classifier_loss": {
@@ -132,9 +144,25 @@ class DepCoarseClassifier(BaseFairseqModel):
     def forward_classifier(self, hidden_state, position_embedding):
 
         input = torch.cat((hidden_state.transpose(0, 1), position_embedding), dim=-1)
-
         score = input.matmul(self.W_arc).matmul(input.transpose(1, 2))  # [b, l, l]
         return score
+
+    def inference(self, hidden_state, position_embedding, compute_loss, target_token, sample):
+        loss = 0
+        if compute_loss:
+            score, predict, dependency_mat = self.predict(hidden_state, position_embedding, sample, target_token)
+            loss = self.loss(predict, (dependency_mat - 1).float())
+            loss = self.mean_ds(loss)
+        else:
+            score = self.forward_classifier(hidden_state, position_embedding)
+        score = F.sigmoid(score)
+        uncorrelated = score > 0.5
+
+        batch_size, seq_len = target_token.size()
+        dependency_mat = target_token.new_zeros(size=target_token.size()).unsqueeze(-1).repeat(1, 1, seq_len)
+        dependency_mat = dependency_mat.masked_fill(uncorrelated, 2)  # 不相关
+        dependency_mat = dependency_mat.masked_fill(~uncorrelated, 1)  # 相关
+        return dependency_mat, loss
 
     def predict(self, hidden_state, position_embedding, sample, reference):
 
@@ -146,7 +174,7 @@ class DepCoarseClassifier(BaseFairseqModel):
         predict = score[reference_mask]
         dependency_mat = dependency_mat[reference_mask]
 
-        return predict, dependency_mat
+        return score, predict, dependency_mat
 
     def compute_accuracy(self, predict, target, threshold=0.5):
         predict = (F.sigmoid(predict) > threshold).long() + 1
@@ -176,6 +204,22 @@ class DepCoarseClassifier(BaseFairseqModel):
     def add_args(parser):
         parser.add_argument('--dep-mat-grain', type=str, default="coarse", choices=['fine', 'coarse'])
         parser.add_argument('--compute-confusion-matrix', action="store_true")
+        parser.add_argument('--load-checkpoint', type=str, default="")
+
+    def load_parameters(self, model_path):
+        with PathManager.open(model_path, "rb") as f:
+            state = torch.load(
+                f, map_location=lambda s, l: default_restore_location(s, "cpu")
+            )
+
+        new_state = {}
+        for k, v in state['model'].items():
+            if "dep_classifier." in k:
+                k = ".".join(k.split('.')[1:])
+                new_state[k] = v
+        self.load_state_dict(new_state)
+
+        print("load parameters for dep_classifier!")
 
 
 @register_model("nat_base")
@@ -201,6 +245,9 @@ class NAT(NATransformerModel):
         parser.add_argument("--layer-norm-eps", type=float, default=1e-5)
         NATDecoder.add_args(parser)
 
+    def post_process_after_layer(self, **kwargs):
+        return None, 0
+
     def fine_tuning_mode(self, args):
         parameters = []
         if getattr(args, "finetune_length_pred", False):
@@ -224,6 +271,7 @@ class NAT(NATransformerModel):
             prev_output_tokens=prev_output_tokens,
             encoder_out=encoder_out,
             inner=True,
+            post_process_function=self.post_process_after_layer,
             **kwargs
         )
 
@@ -246,14 +294,8 @@ class NAT(NATransformerModel):
                 "factor": self.decoder.length_loss_factor
             }
 
-        # content prediction
-        if self.decoder.content_weight > 0.:
-            losses = self.decoder.compute_content_loss(
-                losses=losses,
-                inputs=other,
-                tgt_tokens=tgt_tokens,
-                mask=tgt_tokens.ne(self.pad)
-            )
+        if getattr(self.args, "dependency_classifier_loss", False):
+            pass
 
         return losses
 
@@ -365,6 +407,7 @@ class NAT(NATransformerModel):
             encoder_out=encoder_out,
             step=step,
             extra_ret=False,
+            post_process_function=self.post_process_after_layer,
             **kwargs,
         ).max(-1)
         # try:
@@ -517,13 +560,6 @@ class NATDecoder(NATransformerDecoder):
         # layer-wise attention
         self.layerwise_attn = getattr(args, "layerwise_attn", False)
 
-        # content trainer
-        if self.content_weight > 0:
-            self.content = nn.ModuleList(self.build_content_trainer(args, self.output_projection))
-            self.state_weight = args.content_state_weight
-            self.layer_weight = args.content_layer_weight
-            self.window_size = args.content_window_size
-
         if getattr(args, "self_attn_cls", "abs") != "abs":
             rel_keys = build_relative_embeddings(args) if getattr(args, "share_rel_embeddings", False) else None
             rel_vals = build_relative_embeddings(args) if getattr(args, "share_rel_embeddings", False) else None
@@ -558,75 +594,6 @@ class NATDecoder(NATransformerDecoder):
         parser.add_argument("--content-share-layer", nargs="*", type=int, default=[0, ])
         parser.add_argument("--share-content-all", action="store_true")
         parser.add_argument("--layer-aggregate-func", type=str, default="mean")
-
-    def compute_content_loss(self, losses, inputs, tgt_tokens, mask=None):
-        """
-        including:
-            - Layer Bag-of-word Loss
-            - Window Bag-of-word Loss
-        """
-
-        inner_states = inputs['inner_states']
-        for i, trainer in enumerate(self.content):
-            if trainer is not None:
-                ret = trainer.forward(
-                    x=inner_states[i + 1].transpose(0, 1),
-                    tgt_tokens=tgt_tokens,
-                    mask=mask,
-                    window_size=self.window_size[i],
-                    layer_weight=self.layer_weight[i],
-                    state_weight=self.state_weight[i],
-                    layer=i
-                )
-                losses.update(ret)
-        return losses
-
-    @property
-    def content_weight(self):
-        return sum(getattr(self.args, "content_layer_weight", [0.0, ])) + sum(
-            getattr(self.args, "content_state_weight", [0.0, ]))
-
-    @classmethod
-    def build_content_trainer(cls, args, out):
-        num_layer = args.decoder_layers
-
-        if len(args.content_share_state) <= num_layer:
-            args.content_share_state += ([0] * (num_layer - len(args.content_share_state)))
-
-        if len(args.content_share_layer) <= num_layer:
-            args.content_share_layer += ([0] * (num_layer - len(args.content_share_layer)))
-
-        if len(args.content_layer_weight) <= num_layer:
-            args.content_layer_weight += ([0.0] * (num_layer - len(args.content_layer_weight)))
-
-        if len(args.content_state_weight) <= num_layer:
-            args.content_state_weight += ([0.0] * (num_layer - len(args.content_state_weight)))
-
-        if len(args.content_window_size) <= num_layer:
-            args.content_window_size += ([-1] * (num_layer - len(args.content_window_size)))
-
-        if getattr(args, "share_content_all", False):
-            trainer = ContentTrainer(
-                args=args,
-                out=out,
-                share_state_out=bool(sum(args.content_share_state)),
-                share_layer_out=bool(sum(args.content_share_layer))
-            )
-        else:
-            trainer = None
-
-        contents = []
-        for i in range(num_layer):
-            if (args.content_layer_weight[i] + args.content_state_weight[i]) > 0:
-                _trainer = trainer if trainer is not None else ContentTrainer(
-                    args=args,
-                    out=out,
-                    share_state_out=bool(args.content_share_state[i]),
-                    share_layer_out=args.content_share_layer[i]
-                )
-                contents.append(_trainer)
-
-        return contents
 
     def build_decoder_layer(self, args, no_encoder_attn=False, rel_keys=None, rel_vals=None, **kwargs):
         if getattr(args, "block_cls", "None") == "highway" or getattr(args, "self_attn_cls", "abs") != "abs":
@@ -674,6 +641,16 @@ class NATDecoder(NATransformerDecoder):
         attn = None
         inner_states = [x]
 
+        # decoder_input=100
+        loss = 0
+        post_process_function = unused.get('post_process_function', None)
+        if post_process_function is not None:
+            post_process, loss = post_process_function(layer_id=100, hidden_state=x, position_embedding=position,
+                                                       target_token=prev_output_tokens)
+            if post_process is not None:
+                unused.update(post_process)
+                loss = post_process['dep_classifier_loss']
+
         # decoder layers
         for i, layer in enumerate(self.layers):
 
@@ -691,6 +668,13 @@ class NATDecoder(NATransformerDecoder):
             )
             inner_states.append(x)
 
+            if post_process_function is not None:
+                post_process, loss = post_process_function(layer_id=i, hidden_state=x, position_embedding=position,
+                                                           target_token=prev_output_tokens)
+                if post_process is not None:
+                    unused.update(post_process)
+                    loss = post_process['dep_classifier_loss']
+
         if self.layer_norm:
             x = self.layer_norm(x)
 
@@ -700,7 +684,12 @@ class NATDecoder(NATransformerDecoder):
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
 
-        return x, {"attn": attn, "inner_states": inner_states, "embedding": embedding, "position_embedding": position}
+        other = {"attn": attn, "inner_states": inner_states, "embedding": embedding, "position_embedding": position}
+        if loss != 0:
+            other.update({
+                "dep_classifier_loss": loss
+            })
+        return x, other
 
     def forward_decoder_inputs(self, prev_output_tokens, encoder_out=None, add_position=True, **unused):
         # forward source representation

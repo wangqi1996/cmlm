@@ -17,6 +17,7 @@ from .nat_base import NAT, nat_iwslt16_de_en
 class GLAT(NAT):
 
     def __init__(self, args, encoder, decoder):
+        print("GLAT model !!!!")
         super().__init__(args, encoder, decoder)
         self.mask_method = args.mask_method
 
@@ -143,6 +144,7 @@ class GLAT(NAT):
             prev_output_tokens=prev_output_tokens,
             encoder_out=encoder_out,
             inner=True,
+            post_process_function=self.post_process_after_layer,
             **kwargs
         )
         word_ins_out.detach_()
