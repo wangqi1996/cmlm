@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from fairseq.models.nat.predictor_module import LogisticModel, BCELoss, DecoderLayer, EncoderLayer, \
+from fairseq.models.nat.old.latent.predictor_module import LogisticModel, BCELoss, DecoderLayer, EncoderLayer, \
     EncoderDecoder, LSTMLayer, mean_ds
 
 

@@ -5,8 +5,9 @@
 
 from fairseq.dep import RelativeDepMat
 from fairseq.models import register_model_architecture, register_model
-from fairseq.models.nat import BlockedDecoderLayer, DepRelativeMultiheadAttention, NATDecoder, init_bert_params, \
+from fairseq.models.nat import BlockedDecoderLayer, NATDecoder, init_bert_params, \
     build_relative_embeddings, DepCoarseClassifier, GLAT
+from fairseq.modules.dep_attention import DepRelativeMultiheadAttention
 from .nat_base import nat_iwslt16_de_en
 
 
@@ -145,6 +146,7 @@ class DEPRelativeNAT(SuperClass):
         # relative dep 分类器
         self.dep_classifier = None
         if getattr(args, "predict_dep_relative", False):
+            print("use dependency classifier!!!")
             self.dep_classifier = DepCoarseClassifier(args, self.relative_dep_mat)
 
         # 使用哪层的hidden state算dep relative
@@ -159,6 +161,7 @@ class DEPRelativeNAT(SuperClass):
 
         # 在训练时使用oracle的relative dependency mat
         self.use_oracle_dep = getattr(self.args, "use_oracle_dep", False)
+        self.use_oracle_dep_generate = getattr(self.args, "use_oracle_dep_generate", False)
 
     def add_args(parser):
         SuperClass.add_args(parser)
@@ -166,11 +169,18 @@ class DEPRelativeNAT(SuperClass):
 
         parser.add_argument('--relative-direction', default=True)
         parser.add_argument('--relative-layers', type=str, default="0")  # 0
+
+        # 使用分类器
         parser.add_argument('--predict-dep-relative', action="store_true")
         parser.add_argument('--predict-dep-relative-layer', type=int,
                             default=-2)  # relative-layers比这个搞一个 decoder_input=100
         parser.add_argument('--dependency-classifier-loss', action="store_true")
+
+        # 训练时和valid时 使用oracle信息
         parser.add_argument('--use-oracle-dep', action="store_true")
+
+        # 计算bleu的inference阶段使用oracle信息，默认时分类器的预测
+        parser.add_argument('--use-oracle-dep-generate', action="store_true")
 
     def inference_special_input(self, special_input, not_terminated):
         if special_input is None:
@@ -187,8 +197,9 @@ class DEPRelativeNAT(SuperClass):
     def get_special_input(self, samples, generate=False, **kwargs):
         sample_ids = samples['id']
         target_token = samples['prev_target']
-        # 使用oracle的信息
-        if self.use_oracle_dep and not generate:
+
+        use_oracle = (not generate and self.use_oracle_dep) or (generate and self.use_oracle_dep_generate)
+        if use_oracle:
             dependency_mat = self.relative_dep_mat.get_dependency_mat(sample_ids, target_token, training=self.training,
                                                                       contain_eos=True)
             return {"dependency_mat": dependency_mat}

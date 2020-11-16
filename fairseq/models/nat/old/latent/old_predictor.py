@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from fairseq.models.nat.predictor_module import _Predictor
+from fairseq.models.nat.old.latent.predictor_module import _Predictor
 from fairseq.modules import MultiheadAttention
 
 

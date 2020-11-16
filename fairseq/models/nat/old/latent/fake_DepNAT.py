@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from fairseq.models.nat import CMLMNATransformerModel, register_model, cmlm_base_architecture, \
     register_model_architecture
-from fairseq.models.nat.fake_latent import get_posterior, get_prior
+from fairseq.models.nat.old.latent.fake_latent import get_posterior, get_prior
 from fairseq.util2 import get_base_mask, get_reference_mask
 
 
