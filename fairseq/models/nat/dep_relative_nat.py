@@ -199,7 +199,7 @@ class DEPRelativeNAT(SuperClass):
         if layer_id == self.predict_dep_relative_layer and self.dep_classifier is not None:
 
             if kwargs.get("generate", False):
-                dependency_mat = self.dep_classifier.inference(hidden_state, position_embedding, target_token)
+                dependency_mat = self.dep_classifier.inference(hidden_state, position_embedding)
                 return {'dependency_mat': dependency_mat}
             else:
                 eval_accuracy = kwargs.get('eval_accuracy', False)

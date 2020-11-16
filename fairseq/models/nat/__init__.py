@@ -9,9 +9,9 @@ from .insertion_transformer import *
 from .DepNAT import *
 from .biaffine import *
 from .fake_DepNAT import *
-from .DEP_GLAT import *
-from .DEP_GLAT_joint import *
-from .DEP_GLAT_nojoint import *
+from fairseq.models.nat.old.DEP_GLAT import *
+from fairseq.models.nat.old.DEP_GLAT_joint import *
+from fairseq.models.nat.old.DEP_GLAT_nojoint import *
 from .nonauto_dep_relative_transformer import *
 from .nat_base import *
 from .GLAT import *

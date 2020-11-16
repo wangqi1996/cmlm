@@ -86,19 +86,20 @@ class DepCoarseClassifier(BaseFairseqModel):
             all, correct = self.compute_accuracy(predict, dependency_mat)
         return loss, all, correct
 
-    def inference(self, hidden_state, position_embedding, target_token):
+    def inference(self, hidden_state, position_embedding, **kwargs):
         """
         依然是二分类，是同一个词这种关系本身应该是先验。
         计算损失时只计算不是0（pad） or 3（同一个词）的位置
         """
         score = self.forward_classifier(hidden_state, position_embedding)
         _score, _label = F.log_softmax(score, dim=-1).max(-1)
-        return _label
+        return _label + 1
 
     def compute_accuracy(self, predict, target):
         _score, _label = F.log_softmax(predict, dim=-1).max(-1)
 
         all = len(_label)
+        target = target - 1
         correct = (target == _label).sum().item()
 
         # if self.args.compute_confusion_matrix:

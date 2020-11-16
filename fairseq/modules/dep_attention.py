@@ -10,6 +10,7 @@ from torch import Tensor, nn
 
 from fairseq import utils
 from fairseq.modules.multihead_attention import MultiheadAttention
+from fairseq.util2 import get_base_mask
 
 
 def generate_dependency_matrix(dependency_mat, index=None, cache=False):
@@ -239,9 +240,12 @@ class DepRelativeMultiheadAttention(MultiheadAttention):
         relations_values = self.relative_positions_embeddings(
             relative_positions_matrix.to(key.device))
 
-        attn_weights = query_key + relative_matmul(q.view(bsz, self.num_heads, tgt_len, self.head_dim),
-                                                   relations_keys, True).view(bsz * self.num_heads, tgt_len,
-                                                                              src_len)
+        # 多mask一下bos和eos的
+        rel = relative_matmul(q.view(bsz, self.num_heads, tgt_len, self.head_dim), relations_keys, True)
+        rel_mask = get_base_mask(kwargs['prev_output_tokens'])
+        rel = rel.masked_fill(~rel_mask.unsqueeze(1).unsqueeze(2).to(torch.bool), float('-inf'))
+
+        attn_weights = query_key + rel.view(bsz * self.num_heads, tgt_len, src_len)
 
         assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
 
