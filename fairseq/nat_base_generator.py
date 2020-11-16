@@ -177,7 +177,7 @@ class NAGenerator(IterativeRefinementGenerator):
         special_input = sample.get('special_input', None)
         if special_input is None:
             sample['prev_target'] = prev_output_tokens
-            special_input = model.get_special_input(sample)
+            special_input = model.get_special_input(sample, generate=True)
 
         # TODO
         self.max_iter = 0
@@ -186,7 +186,9 @@ class NAGenerator(IterativeRefinementGenerator):
                 "eos_penalty": self.eos_penalty,
                 "max_ratio": self.max_ratio,
                 "decoding_format": self.decoding_format,
-                "tgt_tokens": tgt_tokens if self.infer_with_tgt else None
+                "tgt_tokens": tgt_tokens if self.infer_with_tgt else None,
+                "sample": sample,
+                "generate": True
             }
             if special_input is not None:
                 decoder_options.update(special_input)

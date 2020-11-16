@@ -2,7 +2,7 @@ from typing import Dict, List, Optional
 
 from torch import Tensor
 
-from fairseq.dep import DepChildTree, DepHeadTree, get_dependency_mat, get_coarse_dependency_mat
+from fairseq.dep import DepChildTree, DepHeadTree
 from fairseq.models import (
     register_model,
     register_model_architecture,
@@ -232,20 +232,7 @@ class RelativeTransformerModel(TransformerModel):
         self.dep_mat_grain = getattr(args, "dep_mat_grain", "fine")
         print(self.dep_mat_grain)
 
-    def get_dependency_mat(self, sample_ids, target_token):
-        if self.head_tree is not None and self.child_tree is not None:
-            if self.dep_mat_grain == "fine":
-                dependency_mat = get_dependency_mat(self.head_tree, self.child_tree, sample_ids, self.training,
-                                                    target_token)
-            elif self.dep_mat_grain == "coarse":
-                dependency_mat = get_coarse_dependency_mat(self.head_tree, self.child_tree, sample_ids, self.training,
-                                                           target_token)
-        else:
-            dependency_mat = None
-
-        return dependency_mat
-
-    def get_special_input(self, samples):
+    def get_special_input(self, samples, **kwargs):
         dependency_mat = self.get_dependency_mat(samples["id"].cpu().tolist(),
                                                  samples['net_input']['prev_output_tokens'])
         return {"dependency_mat": dependency_mat}

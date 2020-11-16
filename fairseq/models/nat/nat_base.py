@@ -1,12 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.init import orthogonal_
-from torch.serialization import default_restore_location
 
-from fairseq.dep import DepChildTree, DepHeadTree, get_dependency_mat, get_coarse_dependency_mat
-from fairseq.file_io import PathManager
-from fairseq.models import BaseFairseqModel
 from fairseq.models.nat.nonautoregressive_transformer import (
     DecoderOut,
     NATransformerModel,
@@ -80,148 +75,6 @@ def build_relative_embeddings(args, embedding_dim=None):
     )
 
 
-class DepCoarseClassifier(BaseFairseqModel):
-    def __init__(self, args, head_tree=None, child_tree=None):
-        super().__init__()
-        self.args = args
-
-        self.W_arc = nn.Parameter(orthogonal_(
-            torch.empty(self.args.decoder_embed_dim * 2, self.args.decoder_embed_dim * 2).cuda()
-        ), requires_grad=True)
-
-        if child_tree is None:
-            self.child_tree = DepChildTree(valid_subset=self.args.valid_subset)
-        else:
-            self.child_tree = child_tree
-
-        if head_tree is None:
-            self.head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
-        else:
-            self.head_tree = head_tree
-
-        self.dep_mat_grain = getattr(args, "dep_mat_grain", "fine")
-        print(self.dep_mat_grain)
-
-        self.loss = nn.BCEWithLogitsLoss(reduction="none")
-
-        if getattr(args, "load_checkpoint", "") != "":
-            self.load_parameters(self.args.load_checkpoint)
-
-    def get_dependency_mat(self, sample_ids, target_token):
-        if self.head_tree is not None and self.child_tree is not None:
-            if self.dep_mat_grain == "fine":
-                dependency_mat = get_dependency_mat(self.head_tree, self.child_tree, sample_ids, self.training,
-                                                    target_token)
-            elif self.dep_mat_grain == "coarse":
-                dependency_mat = get_coarse_dependency_mat(self.head_tree, self.child_tree, sample_ids, self.training,
-                                                           target_token, contain_eos=True)
-        else:
-            dependency_mat = None
-
-        return dependency_mat
-
-    def forward(self, hidden_state, position_embedding, sample, reference):
-        """
-        :param hidden_state:  [batch_size, tgt_len, dim]
-        :param position_embedding: [batch_size, tgt_len, dim]
-        :param sample:
-        :return:
-        """
-        _, predict, target = self.predict(hidden_state, position_embedding, sample, reference)  # predict: =2的概率
-        loss = self.loss(predict, (target - 1).float())
-        loss = self.mean_ds(loss)
-        return {"dep_classifier_loss": {
-            "loss": loss,
-        }}, predict, target
-
-    def mean_ds(self, x: torch.Tensor, dim=None) -> torch.Tensor:
-        return (
-            x.float().mean().type_as(x)
-            if dim is None
-            else x.float().mean(dim).type_as(x)
-        )
-
-    def forward_classifier(self, hidden_state, position_embedding):
-
-        input = torch.cat((hidden_state.transpose(0, 1), position_embedding), dim=-1)
-        score = input.matmul(self.W_arc).matmul(input.transpose(1, 2))  # [b, l, l]
-        return score
-
-    def inference(self, hidden_state, position_embedding, compute_loss, target_token, sample):
-        loss = 0
-        if compute_loss:
-            score, predict, dependency_mat = self.predict(hidden_state, position_embedding, sample, target_token)
-            loss = self.loss(predict, (dependency_mat - 1).float())
-            loss = self.mean_ds(loss)
-        else:
-            score = self.forward_classifier(hidden_state, position_embedding)
-        score = F.sigmoid(score)
-        uncorrelated = score > 0.5
-
-        batch_size, seq_len = target_token.size()
-        dependency_mat = target_token.new_zeros(size=target_token.size()).unsqueeze(-1).repeat(1, 1, seq_len)
-        dependency_mat = dependency_mat.masked_fill(uncorrelated, 2)  # 不相关
-        dependency_mat = dependency_mat.masked_fill(~uncorrelated, 1)  # 相关
-        return dependency_mat, loss
-
-    def predict(self, hidden_state, position_embedding, sample, reference):
-
-        score = self.forward_classifier(hidden_state, position_embedding)
-        sample_ids = sample['id'].cpu().tolist()
-        dependency_mat = self.get_dependency_mat(sample_ids, reference)  # [b,l,l]
-
-        reference_mask = ~(dependency_mat == 0)
-        predict = score[reference_mask]
-        dependency_mat = dependency_mat[reference_mask]
-
-        return score, predict, dependency_mat
-
-    def compute_accuracy(self, predict, target, threshold=0.5):
-        predict = (F.sigmoid(predict) > threshold).long() + 1
-
-        all = len(predict)
-        correct = (predict == target).sum().item()
-
-        # if self.args.compute_confusion_matrix:
-        #     predict_positive = (predict == 1).sum().item()  # 1 是相关
-        #     target_positive = (target == 1).sum().item()
-        #     correct_positive = ((predict == 1) & (target == 1)).sum().item()
-        #
-        #     predict_negative = (predict == 2).sum().item()
-        #     target_negative = (target == 2).sum().item()
-        #     correct_negative = ((predict == 2) & (target == 2)).sum().item()
-        #
-        #     set_value1(predict_positive)
-        #     set_value2(target_positive)
-        #     set_value3(correct_positive)
-        #     set_value4(predict_negative)
-        #     set_value5(target_negative)
-        #     set_value6(correct_negative)
-
-        return all, correct
-
-    @staticmethod
-    def add_args(parser):
-        parser.add_argument('--dep-mat-grain', type=str, default="coarse", choices=['fine', 'coarse'])
-        parser.add_argument('--compute-confusion-matrix', action="store_true")
-        parser.add_argument('--load-checkpoint', type=str, default="")
-
-    def load_parameters(self, model_path):
-        with PathManager.open(model_path, "rb") as f:
-            state = torch.load(
-                f, map_location=lambda s, l: default_restore_location(s, "cpu")
-            )
-
-        new_state = {}
-        for k, v in state['model'].items():
-            if "dep_classifier." in k:
-                k = ".".join(k.split('.')[1:])
-                new_state[k] = v
-        self.load_state_dict(new_state)
-
-        print("load parameters for dep_classifier!")
-
-
 @register_model("nat_base")
 class NAT(NATransformerModel):
 
@@ -246,7 +99,7 @@ class NAT(NATransformerModel):
         NATDecoder.add_args(parser)
 
     def post_process_after_layer(self, **kwargs):
-        return None, 0
+        return None
 
     def fine_tuning_mode(self, args):
         parameters = []
@@ -294,9 +147,9 @@ class NAT(NATransformerModel):
                 "factor": self.decoder.length_loss_factor
             }
 
-        if getattr(self.args, "dependency_classifier_loss", False):
-            pass
-
+        if getattr(self, "dependency_classifier_loss", False):
+            dep_classifier_loss = other['dep_classifier_loss']
+            losses.update(dep_classifier_loss)
         return losses
 
     @classmethod
@@ -505,7 +358,7 @@ class NAT(NATransformerModel):
     def inference_special_input(self, special_input, not_terminated):
         return {}
 
-    def get_special_input(self, samples):
+    def get_special_input(self, samples, **kwargs):
         return {}
 
 
@@ -641,16 +494,6 @@ class NATDecoder(NATransformerDecoder):
         attn = None
         inner_states = [x]
 
-        # decoder_input=100
-        loss = 0
-        post_process_function = unused.get('post_process_function', None)
-        if post_process_function is not None:
-            post_process, loss = post_process_function(layer_id=100, hidden_state=x, position_embedding=position,
-                                                       target_token=prev_output_tokens)
-            if post_process is not None:
-                unused.update(post_process)
-                loss = post_process['dep_classifier_loss']
-
         # decoder layers
         for i, layer in enumerate(self.layers):
 
@@ -668,13 +511,6 @@ class NATDecoder(NATransformerDecoder):
             )
             inner_states.append(x)
 
-            if post_process_function is not None:
-                post_process, loss = post_process_function(layer_id=i, hidden_state=x, position_embedding=position,
-                                                           target_token=prev_output_tokens)
-                if post_process is not None:
-                    unused.update(post_process)
-                    loss = post_process['dep_classifier_loss']
-
         if self.layer_norm:
             x = self.layer_norm(x)
 
@@ -685,53 +521,57 @@ class NATDecoder(NATransformerDecoder):
             x = self.project_out_dim(x)
 
         other = {"attn": attn, "inner_states": inner_states, "embedding": embedding, "position_embedding": position}
-        if loss != 0:
-            other.update({
-                "dep_classifier_loss": loss
-            })
+
         return x, other
 
     def forward_decoder_inputs(self, prev_output_tokens, encoder_out=None, add_position=True, **unused):
         # forward source representation
         if "prev_target_embedding" in unused and unused['prev_target_embedding'] != None:
-            return unused['prev_target_embedding'], prev_output_tokens.eq(self.padding_idx), None
-        mapping_use = self.map_use
-        mapping_func = self.map_func
-
-        if mapping_use == 'embed':
-            src_embed = encoder_out.encoder_embedding
-        else:
-            src_embed = encoder_out.encoder_out.contiguous().transpose(0, 1)
-
-        src_mask = encoder_out.encoder_padding_mask
-        src_mask = (
-            ~src_mask
-            if src_mask is not None
-            else prev_output_tokens.new_ones(*src_embed.size()[:2]).bool()
-        )
-        tgt_mask = prev_output_tokens.ne(self.padding_idx)
-
-        states = None  # indicate to the
-
-        if mapping_func == 'uniform':
-            states = self.forward_copying_source(
-                src_embed, src_mask, prev_output_tokens.ne(self.padding_idx)
+            positions = (
+                self.embed_positions(prev_output_tokens)
+                if self.embed_positions is not None
+                else None
             )
+            return unused['prev_target_embedding'], prev_output_tokens.eq(self.padding_idx), positions
+        else:
+            mapping_use = self.map_use
+            mapping_func = self.map_func
 
-        if mapping_func == "soft":
-            length_sources = src_mask.sum(1)
-            length_targets = tgt_mask.sum(1)
-            mapped_logits = _softcopy_assignment(length_sources, length_targets)  # batch_size, tgt_len, src_len
-            states = torch.bmm(mapped_logits, src_embed)
+            if mapping_use == 'embed':
+                src_embed = encoder_out.encoder_embedding
+            else:
+                src_embed = encoder_out.encoder_out.contiguous().transpose(0, 1)
 
-        if mapping_func == "interpolate":
-            # length_sources = src_mask.sum(1)
-            # length_targets = tgt_mask.sum(1)
-            # mapped_logits = _interpolate_assignment(length_sources, length_targets)  # batch_size, tgt_len, src_len
-            mapped_logits = _interpolate(src_mask, tgt_mask)
-            states = torch.bmm(mapped_logits, src_embed)
+            src_mask = encoder_out.encoder_padding_mask
+            src_mask = (
+                ~src_mask
+                if src_mask is not None
+                else prev_output_tokens.new_ones(*src_embed.size()[:2]).bool()
+            )
+            tgt_mask = prev_output_tokens.ne(self.padding_idx)
 
-        x, decoder_padding_mask, positions = self.forward_embedding(prev_output_tokens, states, add_position)
+            states = None  # indicate to the
+
+            if mapping_func == 'uniform':
+                states = self.forward_copying_source(
+                    src_embed, src_mask, prev_output_tokens.ne(self.padding_idx)
+                )
+
+            if mapping_func == "soft":
+                length_sources = src_mask.sum(1)
+                length_targets = tgt_mask.sum(1)
+                mapped_logits = _softcopy_assignment(length_sources, length_targets)  # batch_size, tgt_len, src_len
+                states = torch.bmm(mapped_logits, src_embed)
+
+            if mapping_func == "interpolate":
+                # length_sources = src_mask.sum(1)
+                # length_targets = tgt_mask.sum(1)
+                # mapped_logits = _interpolate_assignment(length_sources, length_targets)  # batch_size, tgt_len, src_len
+                mapped_logits = _interpolate(src_mask, tgt_mask)
+                states = torch.bmm(mapped_logits, src_embed)
+
+            x, decoder_padding_mask, positions = self.forward_embedding(prev_output_tokens, states, add_position)
+
         return x, decoder_padding_mask, positions
 
     def forward_embedding(self, prev_output_tokens, states=None, add_position=True):

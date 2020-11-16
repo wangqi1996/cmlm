@@ -101,10 +101,13 @@ class GLAT(NAT):
         full_mask = torch.cat((non_mask.unsqueeze(-1), mask.unsqueeze(-1)), dim=-1)
 
         # 处理token
-        predict_unk = reference.new_empty(reference.shape, requires_grad=False).fill_(
-            self.tgt_dict.unk())
+        predict_unk = reference.clone().detach()
+        reference_mask = get_base_mask(reference)
+        predict_unk.masked_fill_(reference_mask, self.unk)
         full_output_tokens = torch.cat((predict_unk.unsqueeze(-1), reference.unsqueeze(-1)), dim=-1)
         output_tokens = (full_output_tokens * full_mask).sum(-1).long()
+
+        # pad等字符的处理
 
         # 处理embedding
         full_embedding = torch.cat((decoder_input.unsqueeze(-1), reference_embedding.unsqueeze(-1)), dim=-1)
@@ -144,7 +147,6 @@ class GLAT(NAT):
             prev_output_tokens=prev_output_tokens,
             encoder_out=encoder_out,
             inner=True,
-            post_process_function=self.post_process_after_layer,
             **kwargs
         )
         word_ins_out.detach_()
@@ -163,6 +165,7 @@ class GLAT(NAT):
             encoder_out=encoder_out,
             inner=True,
             prev_target_embedding=output_embedding,
+            post_process_function=self.post_process_after_layer,
             **kwargs
         )
 
@@ -186,6 +189,10 @@ class GLAT(NAT):
                 "tgt": length_tgt,
                 "factor": self.decoder.length_loss_factor
             }
+
+        if getattr(self, "dependency_classifier_loss", False):
+            dep_classifier_loss = other['dep_classifier_loss']
+            losses.update(dep_classifier_loss)
 
         return losses
 

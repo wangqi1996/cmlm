@@ -17,6 +17,14 @@ def get_base_mask(target_tokens):
     return target_masks
 
 
+def mean_ds(x: torch.Tensor, dim=None) -> torch.Tensor:
+    return (
+        x.float().mean().type_as(x)
+        if dim is None
+        else x.float().mean(dim).type_as(x)
+    )
+
+
 def merge_mask(mask1, mask2):
     if mask1 is None:
         return mask2

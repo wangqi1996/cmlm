@@ -1,3 +1,4 @@
+from .dep_classifier_module import *
 from .fairseq_nat_model import *
 from .nonautoregressive_transformer import *
 from .nat_crf_transformer import *

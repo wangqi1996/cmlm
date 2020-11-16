@@ -101,7 +101,7 @@ class TransformerModel(FairseqEncoderDecoderModel):
         self.args = args
         self.supports_align_args = True
 
-    def get_special_input(self, samples):
+    def get_special_input(self, samples, **kwargs):
         return {}
 
     @staticmethod
