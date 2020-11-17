@@ -7,7 +7,7 @@ from fairseq.data.data_utils import collate_tokens_list
 from fairseq.dep import load_dependency_head_tree
 from fairseq.models import register_model_architecture, register_model
 from fairseq.models.nat import CMLMNATransformerModel, cmlm_base_architecture
-from fairseq.util2 import get_base_mask, set_value1, set_value2
+from fairseq.util2 import get_base_mask, set_all_token, set_diff_tokens
 
 
 class BiaffineAttentionDependency(nn.Module):
@@ -363,9 +363,8 @@ class BiaffineAttention(CMLMNATransformerModel):
 
             all_predict_head, correct_predict_head = self.compute_accuracy(hidden_state, encoder_out,
                                                                            references, head_label)
-
-            set_value1(all_predict_head)
-            set_value2(correct_predict_head)
+            set_diff_tokens(correct_predict_head)
+            set_all_token(all_predict_head)
 
         return decoder_out
 

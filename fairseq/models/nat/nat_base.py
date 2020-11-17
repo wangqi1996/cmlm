@@ -78,6 +78,15 @@ def build_relative_embeddings(args, embedding_dim=None):
 @register_model("nat_base")
 class NAT(NATransformerModel):
 
+    def froze_nmt_model(self):
+        print("froze nmt model !!!!!!")
+
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+
+        for param in self.decoder.parameters():
+            param.requires_grad = False
+
     @staticmethod
     def add_args(parser):
         NATransformerModel.add_args(parser)

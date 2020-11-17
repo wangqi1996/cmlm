@@ -8,7 +8,7 @@ import random
 from fairseq.dep import load_dependency_tree, load_dependency_head_tree
 from fairseq.models import register_model, register_model_architecture
 from fairseq.models.nat import NATransformerModel, base_architecture, BiaffineAttentionDependency
-from fairseq.util2 import set_value1, set_value2, get_base_mask
+from fairseq.util2 import get_base_mask
 
 
 @register_model('DEP_GLAT')
@@ -444,9 +444,6 @@ class DEP_GLAT(NATransformerModel):
 
             all_predict_head, correct_predict_head = self.dependency_model.compute_accuracy(head_dep_predict, head_mask,
                                                                                             head_dep_reference)
-
-            set_value1(all_predict_head)
-            set_value2(correct_predict_head)
 
         return decoder_out
 

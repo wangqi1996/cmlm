@@ -26,8 +26,7 @@ from fairseq.data import iterators
 from fairseq.logging import meters, metrics, progress_bar
 from fairseq.model_parallel.megatron_trainer import MegatronTrainer
 from fairseq.trainer import Trainer
-from fairseq.util2 import init_global_count_tokens, get_value1, get_value2, get_value3, get_value4, get_value5, \
-    get_value6
+from fairseq.util2 import init_global_count_tokens
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -216,12 +215,6 @@ def train(args, trainer, task, epoch_itr):
         init_global_count_tokens()
         valid_losses = validate(args, trainer, task, epoch_itr, valid_subsets)
         print(valid_losses)
-        print(get_value1())
-        print(get_value2())
-        print(get_value3())
-        print(get_value4())
-        print(get_value5())
-        print(get_value6())
         exit(0)
 
     for i, samples in enumerate(progress):

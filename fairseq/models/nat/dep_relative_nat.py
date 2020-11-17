@@ -163,6 +163,10 @@ class DEPRelativeNAT(SuperClass):
         self.use_oracle_dep = getattr(self.args, "use_oracle_dep", False)
         self.use_oracle_dep_generate = getattr(self.args, "use_oracle_dep_generate", False)
 
+        # 固定住nmt模型
+        if self.args.froze_nmt_model:
+            self.froze_nmt_model()
+
     def add_args(parser):
         SuperClass.add_args(parser)
         DepCoarseClassifier.add_args(parser)
@@ -207,10 +211,12 @@ class DEPRelativeNAT(SuperClass):
             return {}
 
     def post_process_after_layer(self, layer_id, hidden_state, position_embedding, target_token, sample, **kwargs):
+
         if layer_id == self.predict_dep_relative_layer and self.dep_classifier is not None:
 
             if kwargs.get("generate", False) and not self.use_oracle_dep_generate:
-                dependency_mat = self.dep_classifier.inference(hidden_state, position_embedding)
+                dependency_mat = self.dep_classifier.inference(hidden_state, position_embedding, sample=sample,
+                                                               **kwargs)
                 return {'dependency_mat': dependency_mat}
             else:
                 eval_accuracy = kwargs.get('eval_accuracy', False)

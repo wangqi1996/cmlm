@@ -7,7 +7,7 @@ from torch.serialization import default_restore_location
 from fairseq.dep import RelativeDepMat
 from fairseq.file_io import PathManager
 from fairseq.models import BaseFairseqModel
-from fairseq.util2 import mean_ds
+from fairseq.util2 import mean_ds, set_diff_tokens, set_all_token, set_key_value
 
 
 class DepCoarseClassifier(BaseFairseqModel):
@@ -57,7 +57,7 @@ class DepCoarseClassifier(BaseFairseqModel):
         dependency_mat = self.relative_dep_mat.get_dependency_mat(sample_ids, reference, training=self.training,
                                                                   contain_eos=True)
 
-        reference_mask = dependency_mat != 0  # 计算损失时仅仅计算相关和不相关两类。
+        reference_mask = dependency_mat != 0
         predict = score[reference_mask]
         dependency_mat = dependency_mat[reference_mask]
 
@@ -93,7 +93,37 @@ class DepCoarseClassifier(BaseFairseqModel):
         """
         score = self.forward_classifier(hidden_state, position_embedding)
         _score, _label = F.log_softmax(score, dim=-1).max(-1)
-        return _label + 1
+        _label = _label + 1
+        # batch_size=1
+        _label[0][0] = 0
+        _label[0][-1] = 0
+        _label[0][:, 0] = 0
+        _label[0][:, -1] = 0
+
+        if kwargs.get("eval_accuracy", False):
+            sample = kwargs.get("sample", None)
+            sample_ids = sample['id'].cpu().tolist()
+            reference = sample["target"]
+            dependency_mat = self.relative_dep_mat.get_dependency_mat(sample_ids, reference, training=self.training,
+                                                                      contain_eos=True)
+            mask = dependency_mat != 0
+            target = dependency_mat[mask]
+            predict = _label[mask]
+            all = len(predict)
+            correct = (target == predict).sum().item()
+            set_diff_tokens(correct)
+            set_all_token(all)
+
+            name = ["pad", "positive", "negative", "same"]
+            for i in [0, 1, 2, 3]:  # 0 pad 1 相关 2 不相关 3 相似
+                predict_i = (predict == i).sum().item()  # 1 是相关
+                target_i = (target == i).sum().item()
+                correct_i = ((predict == i) & (target == i)).sum().item()
+                set_key_value("predict_" + name[i], predict_i)
+                set_key_value("target_" + name[i], target_i)
+                set_key_value("correct_" + name[i], correct_i)
+
+        return _label
 
     def compute_accuracy(self, predict, target):
         _score, _label = F.log_softmax(predict, dim=-1).max(-1)

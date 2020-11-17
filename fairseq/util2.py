@@ -212,20 +212,8 @@ def init_global_count_tokens():
     DIFF_TOKENS = 0
     global ALL_TOKENS
     ALL_TOKENS = 0
-    global VALUE1
-    VALUE1 = 0
-    global VALUE2
-    VALUE2 = 0
-    global VALUE3
-    VALUE3 = 0
-    global VALUE4
-    VALUE4 = 0
-    global VALUE5
-    VALUE5 = 0
-    global VALUE6
-    VALUE6 = 0
-    global STEP_CORRECT_TOKENS
-    STEP_CORRECT_TOKENS = {}
+    global KEY_VALUE
+    KEY_VALUE = {}
 
 
 def set_diff_tokens(value):
@@ -233,82 +221,24 @@ def set_diff_tokens(value):
     DIFF_TOKENS += value
 
 
-def set_value1(value):
-    global VALUE1
-    VALUE1 += value
-
-
-def set_value2(value):
-    global VALUE2
-    VALUE2 += value
-
-
-def set_value3(value):
-    global VALUE3
-    VALUE3 += value
-
-
-def set_value4(value):
-    global VALUE4
-    VALUE4 += value
-
-
-def set_value5(value):
-    global VALUE5
-    VALUE5 += value
-
-
-def set_value6(value):
-    global VALUE6
-    VALUE6 += value
-
-
 def set_all_token(value):
     global ALL_TOKENS
     ALL_TOKENS += value
 
 
-def set_step_value(step, value):
-    global STEP_CORRECT_TOKENS
+def set_key_value(key, value):
+    global KEY_VALUE
 
-    # ratio = int(value * 10)
-    ratio = value
-    pre = STEP_CORRECT_TOKENS.get(step, {}).get(ratio, 0)
-    STEP_CORRECT_TOKENS.setdefault(step, {})
-    STEP_CORRECT_TOKENS[step].setdefault(ratio, 0)
-    STEP_CORRECT_TOKENS[step][ratio] = pre + 1
+    r = KEY_VALUE.get(key, 0)
+    KEY_VALUE[key] = value + r
 
 
-def get_step_value():
-    return STEP_CORRECT_TOKENS
+def get_kay_value():
+    return KEY_VALUE
 
 
 def get_diff_tokens():
     return DIFF_TOKENS
-
-
-def get_value1():
-    return VALUE1
-
-
-def get_value2():
-    return VALUE2
-
-
-def get_value3():
-    return VALUE3
-
-
-def get_value4():
-    return VALUE4
-
-
-def get_value5():
-    return VALUE5
-
-
-def get_value6():
-    return VALUE6
 
 
 def get_all_tokens():

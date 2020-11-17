@@ -17,7 +17,7 @@ from fairseq.dep import load_dependency_tree
 from fairseq.models import register_model, register_model_architecture
 from fairseq.models.nat import NATransformerModel, torch
 from fairseq.util2 import new_arange, get_reference_mask, merge_mask, get_dependency_mask, \
-    get_base_mask, set_all_token, set_diff_tokens, set_step_value
+    get_base_mask, set_all_token, set_diff_tokens
 
 
 def _skeptical_unmasking(output_scores, output_masks, p):
@@ -177,9 +177,9 @@ class CMLMNATransformerModel(NATransformerModel):
             set_diff_tokens(correct_predict_token)
             set_all_token(need_predict_token)
 
-            token_index = output_tokens[correct_mask].cpu().tolist()
-            for i in token_index:
-                set_step_value(0, i)
+            # token_index = output_tokens[correct_mask].cpu().tolist()
+            # for i in token_index:
+            #     set_step_value(0, i)
 
         if history is not None:
             history.append(output_tokens.clone())
