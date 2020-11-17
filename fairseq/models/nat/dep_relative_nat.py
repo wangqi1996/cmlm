@@ -209,7 +209,7 @@ class DEPRelativeNAT(SuperClass):
     def post_process_after_layer(self, layer_id, hidden_state, position_embedding, target_token, sample, **kwargs):
         if layer_id == self.predict_dep_relative_layer and self.dep_classifier is not None:
 
-            if kwargs.get("generate", False):
+            if kwargs.get("generate", False) and not self.use_oracle_dep_generate:
                 dependency_mat = self.dep_classifier.inference(hidden_state, position_embedding)
                 return {'dependency_mat': dependency_mat}
             else:
