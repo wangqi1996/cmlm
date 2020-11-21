@@ -19,7 +19,8 @@ from fairseq import bleu, checkpoint_utils, options, tasks, utils
 from fairseq.data import encoders
 from fairseq.logging import progress_bar
 from fairseq.logging.meters import StopwatchMeter, TimeMeter
-from fairseq.util2 import init_global_count_tokens, get_probability, compute_kl
+from fairseq.util2 import init_global_count_tokens, get_probability, compute_kl, get_diff_tokens, get_all_tokens, \
+    get_key_value
 
 
 def main(args):
@@ -274,7 +275,7 @@ def _main(args, output_file):
     #     print(get_all_tokens())
     print(get_diff_tokens())
     print(get_all_tokens())
-    print(get_step_value())
+    print(get_key_value())
     if get_all_tokens() > 0:
         print("%.2f" % (get_diff_tokens() / get_all_tokens()))
     # print(get_value3())
@@ -293,31 +294,31 @@ def _main(args, output_file):
     # 计算一下熵
     #
 
-    if args.accuracy:
-        # 分n段计算
-        indexs = [4, 86, 967, 8791, -1]
-        # 10000, 1000, 100,
-        predict = get_step_value()[0]
-        for index in range(len(indexs)):
-            if index == len(indexs) - 1:
-                break
-
-            start = indexs[index]
-            end = indexs[index + 1]
-            freq_p = get_probability(tgt_dict.count[start: end], log_x=False)
-
-            predict_p = []
-            for i in range(start, start + len(freq_p)):  # 去掉特殊的token
-                if i in predict:
-                    predict_p.append(predict[i])
-                else:
-                    predict_p.append(1)
-            predict_p = get_probability(predict_p, log_x=False)
-            predict_p = torch.tensor(predict_p).float().cuda()
-            freq_p = torch.tensor(freq_p).float().cuda()
-
-            print(compute_kl(predict_p, freq_p))
-        # print(compute_kl(freq_p[4:], predict_p))
+    # if args.accuracy:
+    #     # 分n段计算
+    #     indexs = [4, 86, 967, 8791, -1]
+    #     # 10000, 1000, 100,
+    #     predict = get_step_value()[0]
+    #     for index in range(len(indexs)):
+    #         if index == len(indexs) - 1:
+    #             break
+    #
+    #         start = indexs[index]
+    #         end = indexs[index + 1]
+    #         freq_p = get_probability(tgt_dict.count[start: end], log_x=False)
+    #
+    #         predict_p = []
+    #         for i in range(start, start + len(freq_p)):  # 去掉特殊的token
+    #             if i in predict:
+    #                 predict_p.append(predict[i])
+    #             else:
+    #                 predict_p.append(1)
+    #         predict_p = get_probability(predict_p, log_x=False)
+    #         predict_p = torch.tensor(predict_p).float().cuda()
+    #         freq_p = torch.tensor(freq_p).float().cuda()
+    #
+    #         print(compute_kl(predict_p, freq_p))
+    #     # print(compute_kl(freq_p[4:], predict_p))
 
     # print(get_value3())
     logger.info('NOTE: hypothesis and token scores are output in base 2')

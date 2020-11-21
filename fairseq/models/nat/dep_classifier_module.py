@@ -11,32 +11,50 @@ from fairseq.util2 import mean_ds, set_diff_tokens, set_all_token, set_key_value
 
 
 class DepCoarseClassifier(BaseFairseqModel):
-    def __init__(self, args, relative_dep_mat=None):
+    def __init__(self, args, relative_dep_mat=None, use_two_class=False):
         super().__init__()
         self.args = args
 
         self.mlp_dim = 400
+        self.class_num = 3
+        if use_two_class:
+            self.class_num = 1
+            self.loss = nn.BCEWithLogitsLoss(reduction='none')
         self.mlp_output = nn.Sequential(
             nn.Linear(self.args.decoder_embed_dim * 4, self.mlp_dim),
             nn.Tanh(),
-            nn.Linear(self.mlp_dim, 3)
+            nn.Linear(self.mlp_dim, self.class_num)
         )
 
         if relative_dep_mat is None:
-            self.relative_dep_mat = RelativeDepMat(valid_subset=self.args.valid_subset)
+            self.relative_dep_mat = RelativeDepMat(valid_subset=self.args.valid_subset, use_two_class=use_two_class)
         else:
             self.relative_dep_mat = relative_dep_mat
 
         if getattr(args, "load_checkpoint", "") != "":
             self.load_parameters(self.args.load_checkpoint)
 
+        self.dep_loss_factor = getattr(self.args, "dep_loss_factor", 1.0)
+        self.positive_class_factor = getattr(self.args, "positive_class_factor", 1.0)
+
     def compute_loss(self, outputs, targets):
-        # 多分类
-        logits = F.log_softmax(outputs, dim=-1)
+
         targets = targets - 1  # 去除pad类别
-        losses = F.nll_loss(logits, targets.to(logits.device), reduction='none')
+        # 多分类
+        if self.class_num != 1:
+            logits = F.log_softmax(outputs, dim=-1)
+            losses = F.nll_loss(logits, targets.to(logits.device), reduction='none')
+        else:
+            losses = self.loss(outputs.squeeze(-1), targets.float())
+
+        if self.positive_class_factor != 1.0:
+            weights = losses.new_ones(size=losses.size()).float()
+            weights.masked_fill_(targets == 0, self.positive_class_factor)
+            losses = losses * weights
 
         loss = mean_ds(losses)
+
+        loss = loss * self.dep_loss_factor
         return loss
 
     def forward_classifier(self, hidden_state: torch.Tensor, position_embedding: torch.Tensor):
@@ -50,18 +68,32 @@ class DepCoarseClassifier(BaseFairseqModel):
         score = self.mlp_output(feature)  # [b, l, l, 3]
         return score
 
-    def predict(self, hidden_state, position_embedding, sample, reference):
+    def get_label(self, score):
+        """score: logits"""
+        if self.class_num == 1:
+            return (F.sigmoid(score) > 0.5 + 1).long()
+        else:
+            _score, _label = F.log_softmax(score, dim=-1).max(-1)
+            return _label + 1
+
+    def predict(self, hidden_state, position_embedding, sample, reference, result_mat=False):
 
         score = self.forward_classifier(hidden_state, position_embedding)
+
         sample_ids = sample['id'].cpu().tolist()
         dependency_mat = self.relative_dep_mat.get_dependency_mat(sample_ids, reference, training=self.training,
                                                                   contain_eos=True)
 
         reference_mask = dependency_mat != 0
+        mat = None
+        if result_mat:
+            _label = self.get_label(score)
+            mat = _label.masked_fill(~reference_mask, 0)
+
         predict = score[reference_mask]
         dependency_mat = dependency_mat[reference_mask]
 
-        return score, predict, dependency_mat
+        return score, predict, dependency_mat, mat
 
     def forward(self, hidden_state, position_embedding, sample, reference):
         """
@@ -70,21 +102,24 @@ class DepCoarseClassifier(BaseFairseqModel):
         :param sample:
         :return:
         """
-        _, predict, target = self.predict(hidden_state, position_embedding, sample, reference)  # predict: =2的概率
+        _, predict, target, _ = self.predict(hidden_state, position_embedding, sample, reference)  # predict: =2的概率
         loss = self.compute_loss(predict, target)
         return {"dep_classifier_loss": {
             "loss": loss,
         }}, predict, target
 
-    def inference_accuracy(self, hidden_state, position_embedding, compute_loss, target_token, sample, eval_accuracy):
+    def inference_accuracy(self, hidden_state, position_embedding, compute_loss, target_token, sample, eval_accuracy,
+                           result_mat):
 
         loss, all, correct = 0, 0, 0
-        score, predict, dependency_mat = self.predict(hidden_state, position_embedding, sample, target_token)
+        score, predict, dependency_mat, train_mat = self.predict(hidden_state, position_embedding, sample, target_token,
+                                                                 result_mat=result_mat)
         if compute_loss:
             loss = self.compute_loss(predict, dependency_mat)
         if eval_accuracy:
             all, correct = self.compute_accuracy(predict, dependency_mat)
-        return loss, all, correct
+
+        return loss, all, correct, train_mat
 
     def inference(self, hidden_state, position_embedding, **kwargs):
         """
@@ -92,8 +127,7 @@ class DepCoarseClassifier(BaseFairseqModel):
         计算损失时只计算不是0（pad） or 3（同一个词）的位置
         """
         score = self.forward_classifier(hidden_state, position_embedding)
-        _score, _label = F.log_softmax(score, dim=-1).max(-1)
-        _label = _label + 1
+        _label = self.get_label(score)
         # batch_size=1
         _label[0][0] = 0
         _label[0][-1] = 0
@@ -106,10 +140,10 @@ class DepCoarseClassifier(BaseFairseqModel):
             reference = sample["target"]
             dependency_mat = self.relative_dep_mat.get_dependency_mat(sample_ids, reference, training=self.training,
                                                                       contain_eos=True)
-            mask = dependency_mat != 0
-            target = dependency_mat[mask]
-            predict = _label[mask]
-            all = len(predict)
+            predict = _label
+            target = dependency_mat
+            b, l, _ = predict.size()
+            all = b * l * l
             correct = (target == predict).sum().item()
             set_diff_tokens(correct)
             set_all_token(all)
@@ -126,35 +160,17 @@ class DepCoarseClassifier(BaseFairseqModel):
         return _label
 
     def compute_accuracy(self, predict, target):
-        _score, _label = F.log_softmax(predict, dim=-1).max(-1)
+        _label = self.get_label(predict)
 
         all = len(_label)
-        target = target - 1
         correct = (target == _label).sum().item()
-
-        # if self.args.compute_confusion_matrix:
-        #     predict_positive = (predict == 1).sum().item()  # 1 是相关
-        #     target_positive = (target == 1).sum().item()
-        #     correct_positive = ((predict == 1) & (target == 1)).sum().item()
-        #
-        #     predict_negative = (predict == 2).sum().item()
-        #     target_negative = (target == 2).sum().item()
-        #     correct_negative = ((predict == 2) & (target == 2)).sum().item()
-        #
-        #     set_value1(predict_positive)
-        #     set_value2(target_positive)
-        #     set_value3(correct_positive)
-        #     set_value4(predict_negative)
-        #     set_value5(target_negative)
-        #     set_value6(correct_negative)
-
         return all, correct
 
     @staticmethod
     def add_args(parser):
         parser.add_argument('--dep-mat-grain', type=str, default="coarse", choices=['fine', 'coarse'])
-        parser.add_argument('--compute-confusion-matrix', action="store_true")
         parser.add_argument('--load-checkpoint', type=str, default="")
+        parser.add_argument('--dep-loss-factor', default=1.0, type=float)
 
     def load_parameters(self, model_path):
         with PathManager.open(model_path, "rb") as f:

@@ -147,6 +147,7 @@ class GLAT(NAT):
             prev_output_tokens=prev_output_tokens,
             encoder_out=encoder_out,
             inner=True,
+            post_process_function=self.post_process_after_layer,
             **kwargs
         )
         word_ins_out.detach_()

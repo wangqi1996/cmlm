@@ -189,7 +189,7 @@ class NAGenerator(IterativeRefinementGenerator):
                 "tgt_tokens": tgt_tokens if self.infer_with_tgt else None,
                 "sample": sample,
                 "generate": True,
-                "eval_accuracy": self.args.eval_accuracy
+                "eval_accuracy": getattr(self.args, "eval_accuracy", False)
             }
             if special_input is not None:
                 decoder_options.update(special_input)

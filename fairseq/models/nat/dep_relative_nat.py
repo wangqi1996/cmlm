@@ -58,7 +58,6 @@ class DEPRelativeDecoder(NATDecoder):
             prev_target_embedding=None,
             **unused
     ):
-
         x, decoder_padding_mask, position = self.forward_decoder_inputs(prev_output_tokens, encoder_out=encoder_out,
                                                                         prev_target_embedding=prev_target_embedding)
 
@@ -97,12 +96,12 @@ class DEPRelativeDecoder(NATDecoder):
             )
             inner_states.append(x)
 
-            # if post_process_function is not None:
-            #     post_process = post_process_function(layer_id=i, hidden_state=x, position_embedding=position,
-            #                                          target_token=prev_output_tokens, **unused)
-            #     if post_process is not None:
-            #         unused.update(post_process)
-            #         dep_classifier_loss = post_process['dep_classifier_loss']
+            if post_process_function is not None:
+                post_process = post_process_function(layer_id=i, hidden_state=x, position_embedding=position,
+                                                     target_token=prev_output_tokens, **unused)
+                if post_process is not None:
+                    unused.update(post_process)
+                    dep_classifier_loss = post_process.get('dep_classifier_loss', None)
 
         if self.layer_norm:
             x = self.layer_norm(x)
@@ -140,28 +139,37 @@ class DEPRelativeNAT(SuperClass):
     def __init__(self, args, encoder, decoder):
         super().__init__(args, encoder, decoder)
 
+        # 依存矩阵计算的相关参数
+        use_two_class = getattr(self.args, "use_two_class", False)
+        print("use_tow_class: ", use_two_class)
+        use_dependency_mat_type = getattr(self.args, "use_dependency_mat_type", False)
         if getattr(self, "relative_dep_mat", None) is None:
-            self.relative_dep_mat = RelativeDepMat(valid_subset=self.args.valid_subset)
+            self.relative_dep_mat = RelativeDepMat(valid_subset=self.args.valid_subset,
+                                                   use_dependency_mat_type=use_dependency_mat_type,
+                                                   use_two_class=use_two_class)
 
+        """
+        分类器
+        """
         # relative dep 分类器
         self.dep_classifier = None
         if getattr(args, "predict_dep_relative", False):
             print("use dependency classifier!!!")
-            self.dep_classifier = DepCoarseClassifier(args, self.relative_dep_mat)
+            self.dep_classifier = DepCoarseClassifier(args, self.relative_dep_mat, use_two_class=use_two_class)
 
         # 使用哪层的hidden state算dep relative
         self.predict_dep_relative_layer = getattr(args, "predict_dep_relative_layer", -2)
-        if self.dep_classifier is not None and self.predict_dep_relative_layer < 0:
-            layers = args.decoder_layers
-            self.predict_dep_relative_layer = layers + self.predict_dep_relative_layer
         print("predict_dep_relative_layer", self.predict_dep_relative_layer)
 
         # 是否计算classifier的损失
         self.dependency_classifier_loss = getattr(self.args, "dependency_classifier_loss", False)
+        self.nmt_loss = getattr(self.args, "nmt_loss", False)
 
         # 在训练时使用oracle的relative dependency mat
         self.use_oracle_dep = getattr(self.args, "use_oracle_dep", False)
         self.use_oracle_dep_generate = getattr(self.args, "use_oracle_dep_generate", False)
+        print("use_oracle_dep： ", self.use_oracle_dep)
+        print("use_oracle_dep_generate: ", self.use_oracle_dep_generate)
 
         # 固定住nmt模型
         if self.args.froze_nmt_model:
@@ -179,12 +187,24 @@ class DEPRelativeNAT(SuperClass):
         parser.add_argument('--predict-dep-relative-layer', type=int,
                             default=-2)  # relative-layers比这个搞一个 decoder_input=100
         parser.add_argument('--dependency-classifier-loss', action="store_true")
+        parser.add_argument('--nmt-loss', action="store_true")
+
+        # 方案1：
+        parser.add_argument('--positive-class-factor', type=float, default=1.0)
 
         # 训练时和valid时 使用oracle信息
         parser.add_argument('--use-oracle-dep', action="store_true")
 
         # 计算bleu的inference阶段使用oracle信息，默认时分类器的预测
         parser.add_argument('--use-oracle-dep-generate', action="store_true")
+
+        """
+        依存矩阵
+        """
+        # 使用哪一个矩阵
+        parser.add_argument('--use-dependency-mat-type', default="parent")  # grandparent
+        # 三分类转二分类
+        parser.add_argument('--use-two-class', action="store_true")
 
     def inference_special_input(self, special_input, not_terminated):
         if special_input is None:
@@ -214,17 +234,23 @@ class DEPRelativeNAT(SuperClass):
 
         if layer_id == self.predict_dep_relative_layer and self.dep_classifier is not None:
 
-            if kwargs.get("generate", False) and not self.use_oracle_dep_generate:
+            generate_mat = kwargs.get("generate", False) and not self.use_oracle_dep_generate
+            train_mat = not kwargs.get("generate") and not self.use_oracle_dep
+            if generate_mat:
                 dependency_mat = self.dep_classifier.inference(hidden_state, position_embedding, sample=sample,
                                                                **kwargs)
                 return {'dependency_mat': dependency_mat}
             else:
                 eval_accuracy = kwargs.get('eval_accuracy', False)
                 dependency_classifier_loss = self.dependency_classifier_loss
-                loss, all, correct = self.dep_classifier.inference_accuracy(hidden_state, position_embedding,
-                                                                            dependency_classifier_loss,
-                                                                            target_token, sample, eval_accuracy)
+                loss, all, correct, dependency_mat = self.dep_classifier.inference_accuracy(hidden_state,
+                                                                                            position_embedding,
+                                                                                            dependency_classifier_loss,
+                                                                                            target_token, sample,
+                                                                                            eval_accuracy,
+                                                                                            result_mat=train_mat)
                 loss = {"dep_classifier_loss": {"loss": loss}}
+
                 if eval_accuracy:
                     loss.setdefault('train_need', {})
                     loss['train_need'].update({
@@ -234,8 +260,79 @@ class DEPRelativeNAT(SuperClass):
                         }})
 
                 result = {"dep_classifier_loss": loss}
+                if train_mat:
+                    result['dependency_mat'] = dependency_mat
                 return result
         return None
+
+    def forward(
+            self, src_tokens, src_lengths, prev_output_tokens, tgt_tokens, **kwargs
+    ):
+        """
+        GLAT: 两步解码
+        1. 输入为没有梯度的decode一遍
+        2. 计算hamming距离（和reference有多少token不一致
+        3. 随机采样（其实是确定了mask的概率。
+        4. hidden state和word embedding混合
+        """
+        # encoding
+        encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, return_all_hiddens=True, **kwargs)
+
+        # decoding
+        word_ins_out, other = self.decoder(
+            normalize=False,
+            prev_output_tokens=prev_output_tokens,
+            encoder_out=encoder_out,
+            inner=True,
+            post_process_function=self.post_process_after_layer,
+            **kwargs
+        )
+        word_ins_out.detach_()
+        _score, predict = word_ins_out.max(-1)
+        mask_num = self.get_mask_num(tgt_tokens, predict)
+
+        decoder_input = other['embedding']
+        samples = kwargs['sample']
+        output_token, output_embedding = self.get_mask_output(decoder_input=decoder_input, reference=tgt_tokens,
+                                                              mask_length=mask_num, samples=samples, encoder_out=None)
+
+        # decoder
+        word_ins_out, other = self.decoder(
+            normalize=False,
+            prev_output_tokens=output_token,
+            encoder_out=encoder_out,
+            inner=True,
+            prev_target_embedding=output_embedding,
+            post_process_function=self.post_process_after_layer,
+            **kwargs
+        )
+
+        losses = {}
+        if self.nmt_loss:
+            losses = {
+                "word_ins": {
+                    "out": word_ins_out,
+                    "tgt": tgt_tokens,
+                    "mask": tgt_tokens.ne(self.pad),
+                    "ls": self.args.label_smoothing,
+                    "nll_loss": True
+                }
+            }
+            # length prediction
+            if self.decoder.length_loss_factor > 0:
+                length_out = self.decoder.forward_length(normalize=False, encoder_out=encoder_out)
+                length_tgt = self.decoder.forward_length_prediction(length_out, encoder_out, tgt_tokens)
+                losses["length"] = {
+                    "out": length_out,
+                    "tgt": length_tgt,
+                    "factor": self.decoder.length_loss_factor
+                }
+
+        if self.dependency_classifier_loss:
+            dep_classifier_loss = other['dep_classifier_loss']
+            losses.update(dep_classifier_loss)
+
+        return losses
 
 
 @register_model_architecture(model_name, model_name + '_iwslt16_de_en')

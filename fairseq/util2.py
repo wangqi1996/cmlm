@@ -233,7 +233,7 @@ def set_key_value(key, value):
     KEY_VALUE[key] = value + r
 
 
-def get_kay_value():
+def get_key_value():
     return KEY_VALUE
 
 
