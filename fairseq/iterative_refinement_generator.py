@@ -305,7 +305,7 @@ class IterativeRefinementGenerator(object):
         special_input = sample.get('special_input', None)
         if special_input is None:
             sample['prev_target'] = prev_output_tokens
-            special_input = model.get_special_input(sample)
+            special_input = model.get_special_input(sample, generate=True)
 
         # TODO 暂时强制写死
         self.max_iter = 0

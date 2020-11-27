@@ -343,7 +343,7 @@ class FairseqTask(object):
         """
         model.train()
         model.set_num_updates(update_num)
-        special_input = model.get_special_input(sample)
+        special_input = model.get_special_input(sample, update_num=update_num)
         with torch.autograd.profiler.record_function("forward"):
             loss, sample_size, logging_output = criterion(model, sample, **special_input)
         if ignore_grad:

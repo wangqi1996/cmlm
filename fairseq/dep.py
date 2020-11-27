@@ -1,4 +1,5 @@
 # encoding=utf-8
+import torch
 
 
 def load_relative_tree(dependency_tree_path):
@@ -166,58 +167,72 @@ class DepHeadTree(DepTree):
 
 
 class RelativeDepMat(DepTree):
-    def get_dep_tree(self, valid_subset="valid", only_valid=False, **kwargs):
+    def get_dep_tree(self, valid_subset="valid", only_valid=False, args=None, **kwargs):
 
+        mat_type = getattr(args, "use_dependency_mat_type", False)
         prefix = "relative_dependency_mat"
-        mat_type = kwargs.get('use_dependency_mat_type', 'parent')
         if mat_type == "grandparent":
             prefix = "relative_dependency_mat_grandparent"
-        print(prefix)
+        print("dep_relative_mat: ", prefix)
+
+        if valid_subset == "test":
+            only_valid = True
 
         self.use_two_class = kwargs.get("use_two_class", False)
-        if not only_valid:
-            train_relative_dependency_mat = load_relative_tree(
-                dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/" + prefix + ".train.log")
-        else:
-            train_relative_dependency_mat = None
 
-        valid_relative_dependency_mat = load_relative_tree(
-            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/" + prefix + "." + str(
-                valid_subset) + ".log")
+        # if not only_valid:
+        #     train_relative_dependency_mat = load_relative_tree(
+        #         dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/" + prefix + ".train.log")
+        # else:
+        #     train_relative_dependency_mat = None
+        #
+        # valid_relative_dependency_mat = load_relative_tree(
+        #     dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/" + prefix + "." + str(
+        #         valid_subset) + ".log")
 
-        return train_relative_dependency_mat, valid_relative_dependency_mat
+        # train_relative_dependency_mat = self.process_mat(train_relative_dependency_mat)
+        # valid_relative_dependency_mat = self.process_mat(valid_relative_dependency_mat)
 
-    def get_dependency_mat(self, sample_ids, reference, training=True, contain_eos=True):
+        # return train_relative_dependency_mat, valid_relative_dependency_mat
+        return None, None
 
-        batch_size, seq_len = reference.size()
-        dep_tensor = reference.new_zeros(size=reference.size()).unsqueeze(-1).repeat(1, 1, seq_len)  # pad=0
+    def process_mat(self, samples):
+        if samples is None:
+            return None
 
-        start = 1
-        for index, id in enumerate(sample_ids):
-            relative_dep_postion = self.get_one_sentence(id, training)
+        result = []
+        for sample in samples:
+            sample_len = sample[0][0][0]
+            mat = torch.LongTensor(sample_len + 2, sample_len + 2).fill_(0)
+            mat[1:sample_len + 1, 1:sample_len + 1] = 2  # 不相关
 
-            # 不相关
-            length = reference[index].ne(1).sum(-1).item()  # 比head child多一个eos的位置。  pad=1
-            if contain_eos:
-                length -= 2
-            else:
-                length -= 1
-            dep_tensor[index][start:start + length, start:start + length].fill_(2)
-
-            # 同一个token = 3
             flag = 3
             if self.use_two_class:
                 flag = 1
-            same_word_relation = relative_dep_postion[0]
+            same_word_relation = sample[1]
             if len(same_word_relation) > 0:
                 for (start_pos, end_pos) in same_word_relation:
-                    dep_tensor[index][start_pos: end_pos, start_pos:end_pos] = flag
+                    mat[start_pos: end_pos, start_pos:end_pos] = flag
 
             # 相关节点=1
-            related_relation = relative_dep_postion[1]
+            related_relation = sample[2]
             if len(related_relation) > 0:
                 for (start1, end1, start2, end2) in related_relation:
-                    dep_tensor[index][start1:end1, start2:end2] = 1
-                    dep_tensor[index][start2:end2, start1:end1] = 1
+                    mat[start1:end1, start2:end2] = 1
+                    mat[start2:end2, start1:end1] = 1
 
+            result.append(mat)
+        return result
+
+    def get_dependency_mat(self, sample_ids, reference, training=True, **kwargs):
+
+        batch_size, seq_len = reference.size()
+        dep_tensor = reference.new_zeros(size=reference.size()).unsqueeze(-1).repeat(1, 1, seq_len)  # pad=0
+        #
+        # for index, id in enumerate(sample_ids):
+        #     relative_dep_postion = self.get_one_sentence(id, training)
+        #     length, _ = relative_dep_postion.size()
+        #     dep_tensor[index][:length, :length] = relative_dep_postion
+        #
+        # return dep_tensor
         return dep_tensor

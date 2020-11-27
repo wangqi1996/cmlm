@@ -1,13 +1,14 @@
 # encoding=utf-8
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.nn.init import orthogonal_
 
 from fairseq.data.data_utils import collate_tokens_list
-from fairseq.dep import load_dependency_head_tree
+from fairseq.dep import load_dependency_head_tree, DepHeadTree
 from fairseq.models import register_model_architecture, register_model
 from fairseq.models.nat import CMLMNATransformerModel, cmlm_base_architecture
-from fairseq.util2 import get_base_mask, set_all_token, set_diff_tokens
+from fairseq.util2 import get_base_mask, set_all_token, set_diff_tokens, mean_ds
 
 
 class BiaffineAttentionDependency(nn.Module):
@@ -15,12 +16,12 @@ class BiaffineAttentionDependency(nn.Module):
 
         super().__init__()
 
-        self.mlp_dim = 500
+        self.mlp_dim = int(input_dim / 2)
+        mlp_input_dim = input_dim
+
         self.args = args
         self.pad = padding_idx
-        mlp_input_dim = input_dim
-        if contain_lstm:
-            mlp_input_dim = 300
+        self.contain_lstm = contain_lstm
 
         self.arc_head_mlp = nn.Sequential(
             nn.Linear(mlp_input_dim, self.mlp_dim),
@@ -36,33 +37,36 @@ class BiaffineAttentionDependency(nn.Module):
             torch.empty(self.mlp_dim + 1, self.mlp_dim).cuda()
         ), requires_grad=True)
 
-        self.input_mapping_pai = 0.3  # 暂时不用这个参数
+        self.head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
 
-        # 获取依存树用作计算损失
-        self.train_dependency_tree_head = load_dependency_head_tree(
-            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency_head.train.log",
-            add_one=True)
-        self.valid_dependency_tree_head = load_dependency_head_tree(
-            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt14_de_en/data-bin/dependency_head.valid.log",
-            add_one=True)
+    def get_reference(self, sample_ids):
 
-        self.contain_lstm = contain_lstm
-
-        if contain_lstm:
-            self.LSTM = nn.GRU(input_size=input_dim, hidden_size=300, num_layers=1, bias=True,
-                               batch_first=True)
-
-    def get_dep_reference(self, sample_ids):
-        if self.training:
-            tree = self.train_dependency_tree_head
-        else:
-            tree = self.valid_dependency_tree_head
-
-        tree = [[0] + tree[id] + [0] for id in sample_ids]  # 特殊处理bos和eos
-        head_label = collate_tokens_list(tree, pad_idx=self.pad)
+        tree = self.head_tree.get_sentences(sample_ids, training=self.training)
+        tree = [[-1] + t + [-1] for t in tree]  # 特殊处理bos和eos
+        head_label = collate_tokens_list(tree, pad_idx=-1)
         head_label = torch.from_numpy(head_label).long().cuda()
 
         return head_label
+
+    def compute_loss(self, outputs, targets):
+        logits = F.log_softmax(outputs, dim=-1)
+        losses = F.nll_loss(logits, targets.to(logits.device), reduction='none')
+        loss = mean_ds(losses)
+
+        return loss
+
+    def forward_classifier(self, hidden_state):
+        h_arc_dep = self.arc_dep_mlp(hidden_state)  # batch * max_trg * mlp_dim
+        h_arc_head = self.arc_head_mlp(hidden_state)  # batch * max_trg * mlp_dim
+
+        batch_size, max_trg_len, decoder_dim = h_arc_head.size()
+
+        arc_dep = torch.cat((h_arc_dep, torch.ones(batch_size, max_trg_len, 1).cuda()),
+                            dim=-1)  # batch * trg_len * (dim+1)
+
+        head_dep_result = arc_dep.matmul(self.W_arc).matmul(h_arc_head.transpose(1, 2))  # batch * trg_len * trg_len
+
+        return head_dep_result
 
     def forward(self, hidden_state, reference):
 

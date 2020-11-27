@@ -170,7 +170,7 @@ class TranslationLevenshteinTask(TranslationTask):
         noise_probability = self.noise_probability_schedule(update_num)
         sample['prev_target'] = self.inject_noise(sample['target'], noise_probability)
 
-        special_input = model.get_special_input(sample)
+        special_input = model.get_special_input(sample, update_num=update_num)
         loss, sample_size, logging_output = criterion(model, sample, update_nums=update_num, **special_input)
         if ignore_grad:
             loss *= 0
@@ -200,7 +200,7 @@ class TranslationLevenshteinTask(TranslationTask):
 
         with torch.no_grad():
             sample['prev_target'] = self.inject_noise(sample['target'], None)
-            special_input = model.get_special_input(sample)
+            special_input = model.get_special_input(sample, update_num=None)
             loss, sample_size, logging_output = criterion(model, sample, **special_input)
 
             if _logging_output is not None:
