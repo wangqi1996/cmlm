@@ -214,6 +214,8 @@ def init_global_count_tokens():
     ALL_TOKENS = 0
     global KEY_VALUE
     KEY_VALUE = {}
+    global KEY_VALUE_LIST
+    KEY_VALUE_LIST = {}
 
 
 def set_diff_tokens(value):
@@ -233,8 +235,21 @@ def set_key_value(key, value):
     KEY_VALUE[key] = value + r
 
 
+def set_key_value_list(key, value):
+    if len(value) == 0:
+        return
+    global KEY_VALUE_LIST
+
+    r = KEY_VALUE_LIST.get(key, [])
+    KEY_VALUE_LIST[key] = r + value
+
+
 def get_key_value():
     return KEY_VALUE
+
+
+def get_key_value_list():
+    return KEY_VALUE_LIST
 
 
 def get_diff_tokens():

@@ -141,12 +141,13 @@ class NATGenerationTask(TranslationLevenshteinTask):
         else:
             return sacrebleu.corpus_bleu(hyps, [refs])
 
-    def valid_step(self, sample, model, criterion):
+    def valid_step(self, sample, model, criterion, update_num=0):
         model.eval()
         with torch.no_grad():
             sample['prev_target'] = self.inject_noise(sample['target'], None)
-            special_input = model.get_special_input(sample)
+            special_input = model.get_special_input(sample, update_num=update_num, generate=False)
             loss, sample_size, logging_output = criterion(model, sample, eval_accuracy=self.args.eval_accuracy,
+                                                          update_num=update_num,
                                                           **special_input)
 
         if self.args.eval_bleu:

@@ -3,11 +3,11 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from argparse import Namespace
-import json
 import itertools
+import json
 import logging
 import os
+from argparse import Namespace
 
 import numpy as np
 
@@ -23,27 +23,25 @@ from fairseq.data import (
     StripTokenDataset,
     TruncateDataset,
 )
-
 from fairseq.tasks import FairseqTask, register_task
 
 EVAL_BLEU_ORDER = 4
-
 
 logger = logging.getLogger(__name__)
 
 
 def load_langpair_dataset(
-    data_path, split,
-    src, src_dict,
-    tgt, tgt_dict,
-    combine, dataset_impl, upsample_primary,
-    left_pad_source, left_pad_target, max_source_positions,
-    max_target_positions, prepend_bos=False, load_alignments=False,
-    truncate_source=False, append_source_id=False,
-    num_buckets=0,
-    shuffle=True,
+        data_path, split,
+        src, src_dict,
+        tgt, tgt_dict,
+        combine, dataset_impl, upsample_primary,
+        left_pad_source, left_pad_target, max_source_positions,
+        max_target_positions, prepend_bos=False, load_alignments=False,
+        truncate_source=False, append_source_id=False,
+        num_buckets=0,
+        shuffle=True,
+        args=None
 ):
-
     def split_exists(split, src, tgt, lang, data_path):
         filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
         return indexed_dataset.dataset_exists(filename, impl=dataset_impl)
@@ -129,6 +127,8 @@ def load_langpair_dataset(
         align_dataset=align_dataset, eos=eos,
         num_buckets=num_buckets,
         shuffle=shuffle,
+        split=split,
+        args=args
     )
 
 

@@ -8,10 +8,10 @@ Translate pre-processed data with a trained model.
 """
 
 import logging
+import math
 import os
 import sys
 
-import math
 import numpy as np
 import torch
 
@@ -19,7 +19,7 @@ from fairseq import bleu, checkpoint_utils, options, tasks, utils
 from fairseq.data import encoders
 from fairseq.logging import progress_bar
 from fairseq.logging.meters import StopwatchMeter, TimeMeter
-from fairseq.util2 import init_global_count_tokens, get_probability, compute_kl, get_diff_tokens, get_all_tokens, \
+from fairseq.util2 import init_global_count_tokens, get_diff_tokens, get_all_tokens, \
     get_key_value
 
 
@@ -276,6 +276,12 @@ def _main(args, output_file):
     print(get_diff_tokens())
     print(get_all_tokens())
     print(get_key_value())
+    # print(get_key_value_list())
+    # with open("test1.txt", 'w') as f1, open("test2.txt", 'w') as f2:
+    #     class_1 = ','.join([str(t) for t in get_key_value_list()['class_1']])
+    #     class_2 = ','.join([str(t) for t in get_key_value_list()['class_2']])
+    #     f1.write(class_1)
+    #     f2.write(class_2)
     if get_all_tokens() > 0:
         print("%.2f" % (get_diff_tokens() / get_all_tokens()))
     # print(get_value3())

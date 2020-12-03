@@ -10,18 +10,17 @@ import torch
 
 from fairseq.data import data_utils, FairseqDataset
 
-
 logger = logging.getLogger(__name__)
 
 
 def collate(
-    samples,
-    pad_idx,
-    eos_idx,
-    left_pad_source=True,
-    left_pad_target=False,
-    input_feeding=True,
-    pad_to_length=None,
+        samples,
+        pad_idx,
+        eos_idx,
+        left_pad_source=True,
+        left_pad_target=False,
+        input_feeding=True,
+        pad_to_length=None,
 ):
     if len(samples) == 0:
         return {}
@@ -175,16 +174,17 @@ class LanguagePairDataset(FairseqDataset):
     """
 
     def __init__(
-        self, src, src_sizes, src_dict,
-        tgt=None, tgt_sizes=None, tgt_dict=None,
-        left_pad_source=True, left_pad_target=False,
-        shuffle=True, input_feeding=True,
-        remove_eos_from_source=False, append_eos_to_target=False,
-        align_dataset=None,
-        append_bos=False, eos=None,
-        num_buckets=0,
-        src_lang_id=None,
-        tgt_lang_id=None,
+            self, src, src_sizes, src_dict,
+            tgt=None, tgt_sizes=None, tgt_dict=None,
+            left_pad_source=True, left_pad_target=False,
+            shuffle=True, input_feeding=True,
+            remove_eos_from_source=False, append_eos_to_target=False,
+            align_dataset=None,
+            append_bos=False, eos=None,
+            num_buckets=0,
+            src_lang_id=None,
+            tgt_lang_id=None,
+            **unused
     ):
         if tgt_dict is not None:
             assert src_dict.pad() == tgt_dict.pad()
@@ -335,12 +335,12 @@ class LanguagePairDataset(FairseqDataset):
             bsz = src_tokens.size(0)
             if self.src_lang_id is not None:
                 res['net_input']['src_lang_id'] = torch.LongTensor(
-                            [[self.src_lang_id]]
-                            ).expand(bsz, 1).to(src_tokens)
+                    [[self.src_lang_id]]
+                ).expand(bsz, 1).to(src_tokens)
             if self.tgt_lang_id is not None:
                 res['tgt_lang_id'] = torch.LongTensor(
-                            [[self.tgt_lang_id]]
-                            ).expand(bsz, 1).to(src_tokens)
+                    [[self.tgt_lang_id]]
+                ).expand(bsz, 1).to(src_tokens)
         return res
 
     def num_tokens(self, index):
@@ -377,8 +377,8 @@ class LanguagePairDataset(FairseqDataset):
     @property
     def supports_prefetch(self):
         return (
-            getattr(self.src, 'supports_prefetch', False)
-            and (getattr(self.tgt, 'supports_prefetch', False) or self.tgt is None)
+                getattr(self.src, 'supports_prefetch', False)
+                and (getattr(self.tgt, 'supports_prefetch', False) or self.tgt is None)
         )
 
     def prefetch(self, indices):

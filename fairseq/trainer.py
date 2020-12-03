@@ -9,12 +9,12 @@ Train a network across multiple GPUs.
 
 import contextlib
 import logging
-from typing import Any, Dict, List
-
 import sys
 import time
-import torch
 from itertools import chain
+from typing import Any, Dict, List
+
+import torch
 
 from fairseq import checkpoint_utils, distributed_utils, models, optim, utils
 from fairseq.file_io import PathManager
@@ -609,7 +609,7 @@ class Trainer(object):
 
             try:
                 _loss, sample_size, logging_output = self.task.valid_step(
-                    sample, self.model, self.criterion
+                    sample, self.model, self.criterion, update_num=self.get_num_updates()
                 )
             except RuntimeError as e:
                 if "out of memory" in str(e):

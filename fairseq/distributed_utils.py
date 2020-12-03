@@ -19,7 +19,6 @@ import torch.distributed as dist
 
 from fairseq import utils
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -272,9 +271,9 @@ def all_gather_list(data, group=None, max_size=16384):
 
 
 def all_reduce_dict(
-    data: Mapping[str, Any],
-    device,
-    group=None,
+        data: Mapping[str, Any],
+        device,
+        group=None,
 ) -> Dict[str, Any]:
     """
     AllReduce a dictionary of values across workers. We separately

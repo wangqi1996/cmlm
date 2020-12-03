@@ -69,9 +69,7 @@ class DEPRelativeDecoder(NATDecoder):
         self.predict_dep_relative_layer = getattr(args, "predict_dep_relative_layer", -2)
         print("使用哪层预测依存矩阵，建议1: ", self.predict_dep_relative_layer)
 
-        # 联合训练损失如何计算
         self.dependency_classifier_loss = getattr(self.args, "dependency_classifier_loss", False)
-        self.nmt_loss = getattr(self.args, "nmt_loss", False)
 
         # 训练和测试策略
         self.use_oracle_dep = getattr(self.args, "use_oracle_dep", False)
@@ -82,6 +80,19 @@ class DEPRelativeDecoder(NATDecoder):
         self.dep_train_method = getattr(self.args, "dep_train_method", "none")
         print("使用何种方式消除train和infernec的gap: ", self.dep_train_method)
 
+        self.random_dep_mat = getattr(self.args, "random_dep_mat", False)
+        print("使用随机的random矩阵: ", self.random_dep_mat)
+
+        self.dep_input_ref = getattr(self.args, "dep_input_ref", False)
+        if self.dep_input_ref:
+            print("使用ref embedding做为分类器的输入: ", self.dep_input_ref)
+            self.encoder_ref = getattr(self.args, "encoder_ref", False)
+            print("是否编码reference: ", self.encoder_ref)
+
+        self.random_perturb_mat = getattr(self.args, "random_perturb_mat", 0.0)
+        if self.random_perturb_mat > 0.0:
+            print("随机扰动oracle矩阵: ", self.random_perturb_mat)
+
     def build_decoder_layer(self, args, no_encoder_attn=False, rel_keys=None, rel_vals=None, layer_id=0, **kwargs):
         if getattr(args, "self_attn_cls", "abs") != "abs":
             rel_keys = rel_keys if rel_keys is not None else build_relative_embeddings(args)
@@ -89,6 +100,9 @@ class DEPRelativeDecoder(NATDecoder):
         return DEPRelativeGLATDecoderLayer(args, no_encoder_attn=no_encoder_attn, relative_keys=rel_keys,
                                            relative_vals=rel_vals,
                                            layer_id=layer_id, **kwargs)
+
+    def apply_init_bias(self):
+        self.dep_classifier.apply_init_bias()
 
     def extract_features(
             self,
@@ -112,7 +126,7 @@ class DEPRelativeDecoder(NATDecoder):
         # 分类器预测relative dep
         dep_classifier_loss = None
         post_process = self.forward_classifier(layer_id=100, hidden_state=x, position_embedding=position,
-                                               reference=prev_output_tokens, **unused)
+                                               reference=prev_output_tokens, encoder_out=encoder_out, **unused)
         if post_process is not None:
             unused.update(post_process)
             dep_classifier_loss = post_process.get('dep_classifier_loss', None)
@@ -136,7 +150,7 @@ class DEPRelativeDecoder(NATDecoder):
             inner_states.append(x)
 
             post_process = self.forward_classifier(layer_id=i, hidden_state=x, position_embedding=position,
-                                                   reference=prev_output_tokens, **unused)
+                                                   reference=prev_output_tokens, encoder_out=encoder_out, **unused)
             if post_process is not None:
                 unused.update(post_process)
                 dep_classifier_loss = post_process.get('dep_classifier_loss', None)
@@ -182,12 +196,17 @@ class DEPRelativeDecoder(NATDecoder):
             return True
 
     def get_special_input(self, samples, generate=False, **kwargs):
+        sample_ids = samples['id']
+        target_token = samples['prev_target']
+
+        if self.random_dep_mat:
+            dependency_mat = self.relative_dep_mat.get_random_mat(sample_ids, target_token, training=self.training)
+            return {"dependency_mat": dependency_mat}
+
         use_oracle = self.compute_oracle_dep(update_nums=kwargs['update_num'], generate=generate)
         if use_oracle:
-            sample_ids = samples['id']
-            target_token = samples['prev_target']
-
-            dependency_mat = self.relative_dep_mat.get_dependency_mat(sample_ids, target_token, training=self.training)
+            dependency_mat = self.relative_dep_mat.get_dependency_mat(sample_ids, target_token, training=self.training,
+                                                                      perturb=self.random_perturb_mat)
             return {"dependency_mat": dependency_mat}
         else:
             return {}
@@ -195,28 +214,45 @@ class DEPRelativeDecoder(NATDecoder):
     def forward_classifier(self, layer_id, hidden_state, position_embedding, reference, sample, **kwargs):
 
         if layer_id == self.predict_dep_relative_layer and self.dep_classifier is not None:
+            encoder_out = kwargs['encoder_out']
+            if self.dep_input_ref:
+                ref_embedding, decoder_padding_mask, _ = self.forward_embedding(sample['target'])
+                hidden_state = ref_embedding.transpose(0, 1)
+                if self.encoder_ref:
 
-            generate_mat = self.compute_predict_dep(update_nums=kwargs.get('update_num', -1), **kwargs)
+                    for i, layer in enumerate(self.layers):
+                        if i in [0, 1]:
+                            hidden_state, attn, _ = layer(
+                                hidden_state,
+                                encoder_out.encoder_out if not self.layerwise_attn else encoder_out.encoder_states[i],
+                                encoder_out.encoder_padding_mask if encoder_out is not None else None,
+                                self_attn_mask=None,
+                                self_attn_padding_mask=decoder_padding_mask,
+                                prev_output_tokens=sample['target'],
+                            )
+                hidden_state = hidden_state.detach()
+
+            generate_mat = self.compute_predict_dep(**kwargs)
 
             if kwargs.get("generate", False):
                 if not generate_mat:
                     return {}
 
                 dependency_mat = self.dep_classifier.inference(hidden_state, position_embedding, sample=sample,
-                                                               reference=reference,
+                                                               reference=reference, perturb=self.random_perturb_mat,
                                                                **kwargs)
                 return {'dependency_mat': dependency_mat}
             else:
                 eval_accuracy = kwargs.get('eval_accuracy', False)
-                dependency_classifier_loss = self.dependency_classifier_loss and kwargs.get(
-                    "dependency_classifier_loss", True)
+                dependency_classifier_loss = self.dependency_classifier_loss
                 loss, all, correct, dependency_mat = self.dep_classifier.inference_accuracy(hidden_state,
                                                                                             position_embedding,
                                                                                             dependency_classifier_loss,
                                                                                             reference, sample,
                                                                                             eval_accuracy,
-                                                                                            result_mat=generate_mat)
-                loss = {"dep_classifier_loss": {"loss": loss}}
+                                                                                            result_mat=generate_mat,
+                                                                                            encoder_out=encoder_out)
+                loss = {"dep_classifier": {"loss": loss}}
 
                 if eval_accuracy:
                     loss.setdefault('train_need', {})
@@ -244,11 +280,22 @@ SuperClass, model_name = GLAT, "dep_relative_glat"
 
 @register_model(model_name)
 class DEPRelativeNAT(SuperClass):
+
+    def __init__(self, args, encoder, decoder):
+        super().__init__(args, encoder, decoder)
+
+        # 联合训练损失如何计算
+        self.dependency_classifier_loss = getattr(self.args, "dependency_classifier_loss", False)
+        self.nmt_loss = getattr(self.args, "nmt_loss", False)
+
     @classmethod
     def build_decoder(cls, args, tgt_dict, embed_tokens):
         decoder = DEPRelativeDecoder(args, tgt_dict, embed_tokens)
         if getattr(args, "apply_bert_init", False):
             decoder.apply(init_bert_params)
+
+        if args.classifier_mutual_method == "bias":
+            decoder.apply_init_bias()
         return decoder
 
     def add_args(parser):
@@ -261,12 +308,16 @@ class DEPRelativeNAT(SuperClass):
         parser.add_argument('--relative-layers', type=str, default="0")
         parser.add_argument('--use-dependency-mat-type', default="parent")  # grandparent
         parser.add_argument('--use-two-class', action="store_true")  # 将相同类别归于相关类别
+        parser.add_argument('--random-dep-mat', action="store_true")
+        parser.add_argument('--random-perturb-mat', type=float, default=0.0)
 
         # 分类器相关
-        parser.add_argument('--predict-dep-model', type="str", default="none", choices=['none', 'head', 'relative'],
+        parser.add_argument('--predict-dep-model', type=str, default="none", choices=['none', 'head', 'relative'],
                             help="the model used to predict the dependency matrix")
         parser.add_argument('--predict-dep-relative-layer', type=int,
                             default=-2)
+        parser.add_argument('--dep-input-ref', action="store_true")
+        parser.add_argument('--encoder-ref', action="store_true")
 
         # 联合训练相关
         parser.add_argument('--dependency-classifier-loss', action="store_true",
@@ -310,13 +361,13 @@ class DEPRelativeNAT(SuperClass):
         encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, return_all_hiddens=True, **kwargs)
 
         # decoding 不计算分类器的准确率和loss，只计算矩阵
+        eval_accuracy = kwargs.get("eval_accuracy", False)
+        kwargs['eval_accuracy'] = False
         word_ins_out, other = self.decoder(
             normalize=False,
             prev_output_tokens=prev_output_tokens,
             encoder_out=encoder_out,
             inner=True,
-            eval_accuracy=False,
-            dependency_classifier_loss=False,
             **kwargs
         )
         word_ins_out.detach_()
@@ -329,6 +380,7 @@ class DEPRelativeNAT(SuperClass):
                                                               mask_length=mask_num, samples=samples, encoder_out=None)
 
         # decoder
+        kwargs['eval_accuracy'] = eval_accuracy
         word_ins_out, other = self.decoder(
             normalize=False,
             prev_output_tokens=output_token,

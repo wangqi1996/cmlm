@@ -153,13 +153,13 @@ class DepHeadTree(DepTree):
 
         if not only_valid:
             train_dependency_tree_head = load_dependency_head_tree(
-                dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_head.train.log",
+                dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_head_2.train.log",
                 add_one=True)  # head[i]=j， 节点i的父节点是节点j，i从0开始（下标） j从1开始。
         else:
             train_dependency_tree_head = None
 
         valid_dependency_tree_head = load_dependency_head_tree(
-            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_head." + str(
+            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_head_2." + str(
                 valid_subset) + ".log",
             add_one=True)
 
@@ -180,21 +180,22 @@ class RelativeDepMat(DepTree):
 
         self.use_two_class = kwargs.get("use_two_class", False)
 
-        # if not only_valid:
-        #     train_relative_dependency_mat = load_relative_tree(
-        #         dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/" + prefix + ".train.log")
-        # else:
-        #     train_relative_dependency_mat = None
-        #
-        # valid_relative_dependency_mat = load_relative_tree(
-        #     dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/" + prefix + "." + str(
-        #         valid_subset) + ".log")
+        if not only_valid:
+            train_relative_dependency_mat = load_relative_tree(
+                dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/" + prefix + ".train.log")
+        else:
+            train_relative_dependency_mat = None
 
-        # train_relative_dependency_mat = self.process_mat(train_relative_dependency_mat)
-        # valid_relative_dependency_mat = self.process_mat(valid_relative_dependency_mat)
+        valid_relative_dependency_mat = load_relative_tree(
+            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/" + prefix + "." + str(
+                valid_subset) + ".log")
 
-        # return train_relative_dependency_mat, valid_relative_dependency_mat
-        return None, None
+        train_relative_dependency_mat = self.process_mat(train_relative_dependency_mat)
+        valid_relative_dependency_mat = self.process_mat(valid_relative_dependency_mat)
+
+        return train_relative_dependency_mat, valid_relative_dependency_mat
+
+        # return None, None
 
     def process_mat(self, samples):
         if samples is None:
@@ -224,15 +225,70 @@ class RelativeDepMat(DepTree):
             result.append(mat)
         return result
 
-    def get_dependency_mat(self, sample_ids, reference, training=True, **kwargs):
+    def get_dependency_mat(self, sample_ids, reference, training=True, perturb=0.0, **kwargs):
 
         batch_size, seq_len = reference.size()
         dep_tensor = reference.new_zeros(size=reference.size()).unsqueeze(-1).repeat(1, 1, seq_len)  # pad=0
-        #
-        # for index, id in enumerate(sample_ids):
-        #     relative_dep_postion = self.get_one_sentence(id, training)
-        #     length, _ = relative_dep_postion.size()
-        #     dep_tensor[index][:length, :length] = relative_dep_postion
-        #
-        # return dep_tensor
+
+        def _perturb(label, mask_length):
+            co_score = score + (dep_tensor[index][:length][:length] == label).long()
+            co_score = co_score.view(-1)
+            _, target_rank = co_score.sort(descending=True)
+            mask = target_rank.new_zeros(target_rank.size()).bool().fill_(False)
+            mask[target_rank[:mask_length]] = True
+            return mask.view(length, length)
+
+        for index, id in enumerate(sample_ids):
+            relative_dep_postion = self.get_one_sentence(id, training)
+            length, _ = relative_dep_postion.size()
+            dep_tensor[index][:length, :length] = relative_dep_postion
+
+            # oracle = dep_tensor[index].clone()
+            if perturb > 0.0:
+                correlation_length = (dep_tensor[index] == 1).sum().item()
+                uncorrelation_length = (dep_tensor[index] == 2).sum().item()
+                mask_length = round(correlation_length * perturb)
+                score = dep_tensor[index][:length][:length].clone().float().uniform_()
+
+                if correlation_length > 0:
+                    _mask_length = min(mask_length, correlation_length)
+                    _perturb_1 = _perturb(1, _mask_length)  # 1->2
+                if uncorrelation_length > 0:
+                    _mask_length = min(mask_length, uncorrelation_length)
+                    _perturb_2 = _perturb(2, _mask_length)  # 2->1
+
+                if correlation_length > 0:
+                    dep_tensor[index].masked_fill_(_perturb_1, 2)
+                if uncorrelation_length > 0:
+                    dep_tensor[index].masked_fill_(_perturb_2, 1)
+
+            # l, _ = dep_tensor[index].size()
+            #
+            # name = ["pad", "positive", "negative", "same"]
+            # for i in [1, 2]:  # 0 pad 1 相关 2 不相关 3 相似
+            #     predict_i = (dep_tensor[index] == i).sum().item()  # 1 是相关
+            #     target_i = (oracle == i).sum().item()
+            #     correct_i = ((dep_tensor[index] == i) & (oracle == i)).sum().item()
+            #     set_key_value("predict_" + name[i], predict_i)
+            #     set_key_value("target_" + name[i], target_i)
+            #     set_key_value("correct_" + name[i], correct_i)
+
+        return dep_tensor
+
+    def get_random_mat(self, sample_ids, reference, training=True, **kwargs):
+        batch_size, seq_len = reference.size()
+        dep_tensor = reference.new_zeros(size=reference.size()).unsqueeze(-1).repeat(1, 1, seq_len)  # pad=0
+        # print("sample_ids: ", sample_ids)
+        for index, id in enumerate(sample_ids):
+            ref_len = (reference[index] != 1).sum().item()
+            dep_tensor[index][:ref_len, :ref_len] = 2
+            # 随机扰动14% = 1
+            mask_len = int(ref_len * ref_len * 0.14)
+            target_score = dep_tensor[index][:ref_len][:ref_len].clone().float().uniform_()
+            target_score = target_score.view(-1)
+
+            _, target_rank = target_score.sort()
+            target_cutoff = (target_rank < mask_len).view(ref_len, ref_len)
+            dep_tensor[index] = dep_tensor[index].masked_fill(target_cutoff, 1)
+
         return dep_tensor
