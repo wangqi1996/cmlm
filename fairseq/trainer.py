@@ -855,6 +855,10 @@ class Trainer(object):
             data['extra_stats_' + str(i)] = stat
         if len(logging_outputs) > 0:
             log_keys = list(logging_outputs[0].keys())
+            for remove_k in ['need_print', "train_need"]:
+                if remove_k in log_keys:
+                    log_keys.remove(remove_k)
+                    
             for k in log_keys:
                 if not ignore:
                     v = sum(log[k] for log in logging_outputs if k in log)

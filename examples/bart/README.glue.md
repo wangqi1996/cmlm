@@ -91,7 +91,7 @@ with open('glue_data/RTE/dev.tsv') as fin:
         tokens = line.strip().split('\t')
         sent1, sent2, target = tokens[1], tokens[2], tokens[3]
         tokens = bart.encode(sent1, sent2)
-        prediction = bart.predict('sentence_classification_head', tokens).argmax().item()
+        prediction = `bart.predict('sentence_classification_head', tokens).argmax().item()
         prediction_label = label_fn(prediction)
         ncorrect += int(prediction_label == target)
         nsamples += 1

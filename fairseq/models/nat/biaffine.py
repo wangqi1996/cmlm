@@ -83,31 +83,35 @@ class Tarjan:
 
 
 class BiaffineAttentionDependency(nn.Module):
-    def __init__(self, args, input_dim):
+    def __init__(self, args, input_dim, head_tree=None, no_mlp=False):
 
         super().__init__()
-
-        mlp_input_dim = input_dim
-
-        self.mlp_dim = 500
-        # self.mlp_dim = int(input_dim / 2)
         self.args = args
+        self.no_mlp = no_mlp
 
-        self.arc_head_mlp = nn.Sequential(
-            nn.Linear(mlp_input_dim, self.mlp_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(0.33))
+        if not self.no_mlp:
+            mlp_input_dim = input_dim
+            self.mlp_dim = 500
+            self.arc_head_mlp = nn.Sequential(
+                nn.Linear(mlp_input_dim, self.mlp_dim),
+                nn.LeakyReLU(),
+                nn.Dropout(0.33))
 
-        self.arc_dep_mlp = nn.Sequential(
-            nn.Linear(mlp_input_dim, self.mlp_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(0.33))
+            self.arc_dep_mlp = nn.Sequential(
+                nn.Linear(mlp_input_dim, self.mlp_dim),
+                nn.LeakyReLU(),
+                nn.Dropout(0.33))
+        else:
+            self.mlp_dim = input_dim
 
         self.W_arc = nn.Parameter(orthogonal_(
             torch.empty(self.mlp_dim + 1, self.mlp_dim).cuda()
         ), requires_grad=True)
 
-        self.head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
+        if head_tree is None:
+            self.head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
+        else:
+            self.head_tree = head_tree
 
         self.dropout = nn.Dropout(0.33)
 
@@ -128,9 +132,12 @@ class BiaffineAttentionDependency(nn.Module):
 
         return loss
 
-    def forward_classifier(self, hidden_state):
-        h_arc_dep = self.arc_dep_mlp(hidden_state)  # batch * max_trg * mlp_dim
-        h_arc_head = self.arc_head_mlp(hidden_state)  # batch * max_trg * mlp_dim
+    def forward_classifier(self, hidden_state, return_hidden=False):
+        if not self.no_mlp:
+            h_arc_dep = self.arc_dep_mlp(hidden_state)  # batch * max_trg * mlp_dim
+            h_arc_head = self.arc_head_mlp(hidden_state)  # batch * max_trg * mlp_dim
+        else:
+            h_arc_dep, h_arc_head = hidden_state, hidden_state
 
         batch_size, max_trg_len, decoder_dim = h_arc_head.size()
 
@@ -139,7 +146,10 @@ class BiaffineAttentionDependency(nn.Module):
 
         head_dep_result = arc_dep.matmul(self.W_arc).matmul(h_arc_head.transpose(1, 2))  # batch * trg_len * trg_len
 
-        return head_dep_result
+        if not return_hidden:
+            return head_dep_result
+        else:
+            return head_dep_result, hidden_state
 
     # def forward(self, hidden_state, reference):
     #

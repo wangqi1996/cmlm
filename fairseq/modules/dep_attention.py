@@ -94,7 +94,7 @@ class DepRelativeMultiheadAttention(MultiheadAttention):
             need_weights = True
 
         tgt_len, bsz, embed_dim = query.size()
-        assert embed_dim == self.embed_dim
+        assert embed_dim == self.embed_dim, str(embed_dim) + " " + str(self.embed_dim)
         assert list(query.size()) == [tgt_len, bsz, embed_dim]
 
         if incremental_state is not None:

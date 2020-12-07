@@ -285,3 +285,21 @@ def compute_kl(l1, l2):
     """
     l1 = l1.log()
     return F.kl_div(l1, l2, reduction='batchmean')
+
+
+def mixture_input(mask, reference_embedding, decoder_input, reference, unk=3):
+    non_mask = ~mask
+    full_mask = torch.cat((non_mask.unsqueeze(-1), mask.unsqueeze(-1)), dim=-1)
+
+    # 处理token
+    predict_unk = reference.clone().detach()
+    reference_mask = get_base_mask(reference)
+    predict_unk.masked_fill_(reference_mask, unk)
+    full_output_tokens = torch.cat((predict_unk.unsqueeze(-1), reference.unsqueeze(-1)), dim=-1)
+    output_tokens = (full_output_tokens * full_mask).sum(-1).long()
+
+    # 处理embedding
+    full_embedding = torch.cat((decoder_input.unsqueeze(-1), reference_embedding.unsqueeze(-1)), dim=-1)
+    output_emebdding = (full_embedding * full_mask.unsqueeze(-2)).sum(-1)
+
+    return output_tokens, output_emebdding

@@ -89,6 +89,12 @@ def convert_tree_to_index(sentence, max_value, scale):
 
 class DepTree():
 
+    def get_file_dir(self, dep_file):
+        if dep_file == "iwslt16":
+            return "/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/"
+        if dep_file == "wmt16":
+            return "/home/data_ti5_c/wangdq/data/test/wmt16_en_ro/dependency/"
+
     def __init__(self, valid_subset="valid", use_tree=True, only_valid=False, **kwargs):
         if use_tree:
             self.train_tree, self.valid_tree = self.get_dep_tree(valid_subset, only_valid, **kwargs)
@@ -110,18 +116,19 @@ class DepTree():
 
 
 class DepChildTree(DepTree):
-    def get_dep_tree(self, valid_subset="valid", only_valid=False, **kwargs):
+    def get_dep_tree(self, valid_subset="valid", only_valid=False, dep_file="", **kwargs):
 
+        dir_name = self.get_file_dir(dep_file)
         if not only_valid:
             train_dependency_tree_child = load_dependency_tree(
-                "/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_child.train.log",
+                dir_name + "dependency_child.train.log",
                 add_one=True
             )  # 节点index index从0开始计数，孩子节点编号从1开始计数。
         else:
             train_dependency_tree_child = None
 
         valid_dependency_tree_child = load_dependency_tree(
-            "/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_child." + str(
+            dir_name + "dependency_child." + str(
                 valid_subset) + ".log",
             add_one=True
         )
@@ -129,18 +136,20 @@ class DepChildTree(DepTree):
 
 
 class DepLayerTree(DepTree):
-    def get_dep_tree(self, valid_subset="valid", only_valid=False, **kwargs):
+    def get_dep_tree(self, valid_subset="valid", only_valid=False, dep_file="", **kwargs):
+
+        dir_name = self.get_file_dir(dep_file)
 
         if not only_valid:
             train_dependency_tree_child = load_dependency_tree(
-                "/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency.train.log",
+                dir_name + "dependency.train.log",
                 add_one=True
             )  # 节点index index从0开始计数，孩子节点编号从1开始计数。
         else:
             train_dependency_tree_child = None
 
         valid_dependency_tree_child = load_dependency_tree(
-            "/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency." + str(
+            dir_name + "dependency." + str(
                 valid_subset) + ".log",
             add_one=True
         )
@@ -149,17 +158,19 @@ class DepLayerTree(DepTree):
 
 class DepHeadTree(DepTree):
 
-    def get_dep_tree(self, valid_subset="valid", only_valid=False, **kwargs):
+    def get_dep_tree(self, valid_subset="valid", only_valid=False, dep_file="", **kwargs):
+
+        dir_name = self.get_file_dir(dep_file)
 
         if not only_valid:
             train_dependency_tree_head = load_dependency_head_tree(
-                dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_head_2.train.log",
+                dependency_tree_path=dir_name + "dependency_head_2.train.log",
                 add_one=True)  # head[i]=j， 节点i的父节点是节点j，i从0开始（下标） j从1开始。
         else:
             train_dependency_tree_head = None
 
         valid_dependency_tree_head = load_dependency_head_tree(
-            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/dependency_head_2." + str(
+            dependency_tree_path=dir_name + "dependency_head_2." + str(
                 valid_subset) + ".log",
             add_one=True)
 
@@ -167,13 +178,15 @@ class DepHeadTree(DepTree):
 
 
 class RelativeDepMat(DepTree):
-    def get_dep_tree(self, valid_subset="valid", only_valid=False, args=None, **kwargs):
+    def get_dep_tree(self, valid_subset="valid", only_valid=False, args=None, dep_file="iwslt16", **kwargs):
 
-        mat_type = getattr(args, "use_dependency_mat_type", False)
-        prefix = "relative_dependency_mat"
-        if mat_type == "grandparent":
-            prefix = "relative_dependency_mat_grandparent"
-        print("dep_relative_mat: ", prefix)
+        # mat_type = getattr(args, "use_dependency_mat_type", False)
+        prefix = "relative_dependency_mat_grandparent"
+        # if mat_type != "grandparent":
+        #     prefix ="relative_dependency_mat"
+        # print("dep_relative_mat: ", prefix)
+
+        dir_name = self.get_file_dir(dep_file)
 
         if valid_subset == "test":
             only_valid = True
@@ -182,12 +195,12 @@ class RelativeDepMat(DepTree):
 
         if not only_valid:
             train_relative_dependency_mat = load_relative_tree(
-                dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/" + prefix + ".train.log")
+                dependency_tree_path=dir_name + prefix + ".train.log")
         else:
             train_relative_dependency_mat = None
 
         valid_relative_dependency_mat = load_relative_tree(
-            dependency_tree_path="/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/" + prefix + "." + str(
+            dependency_tree_path=dir_name + prefix + "." + str(
                 valid_subset) + ".log")
 
         train_relative_dependency_mat = self.process_mat(train_relative_dependency_mat)
@@ -284,7 +297,7 @@ class RelativeDepMat(DepTree):
             dep_tensor[index][:ref_len, :ref_len] = 2
             # 随机扰动14% = 1
             mask_len = int(ref_len * ref_len * 0.14)
-            target_score = dep_tensor[index][:ref_len][:ref_len].clone().float().uniform_()
+            target_score = dep_tensor[index][:ref_len, :ref_len].clone().float().uniform_()
             target_score = target_score.view(-1)
 
             _, target_rank = target_score.sort()

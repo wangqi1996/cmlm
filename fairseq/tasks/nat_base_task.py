@@ -158,4 +158,11 @@ class NATGenerationTask(TranslationLevenshteinTask):
             for i in range(EVAL_BLEU_ORDER):
                 logging_output['_bleu_counts_' + str(i)] = bleu.counts[i]
                 logging_output['_bleu_totals_' + str(i)] = bleu.totals[i]
+
+        if "train_need" in logging_output:
+            logging_output.pop("train_need")
+
+        if "need_print" in logging_output and len(logging_output['need_print']) == 0:
+            logging_output.pop("need_print")
+            
         return loss, sample_size, logging_output

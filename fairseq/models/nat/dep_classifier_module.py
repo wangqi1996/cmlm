@@ -1,15 +1,14 @@
 # encoding=utf-8
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from fairseq.dep import RelativeDepMat
+from fairseq.dep import RelativeDepMat, DepHeadTree
 from fairseq.models import BaseFairseqModel
 from fairseq.models.lstm import LSTM
-from fairseq.models.nat import BiaffineAttentionDependency, set_diff_tokens, set_all_token, get_base_mask, \
-    BlockedDecoderLayer, build_relative_embeddings
-from fairseq.util2 import mean_ds, set_key_value
+from fairseq.models.nat import BiaffineAttentionDependency, get_base_mask, \
+    BlockedDecoderLayer, build_relative_embeddings, new_arange
+from fairseq.util2 import set_key_value
 
 
 def build_dep_classifier(model_name, **kwargs):
@@ -19,8 +18,11 @@ def build_dep_classifier(model_name, **kwargs):
     if model_name == "head":
         return DepHeadClassifier(**kwargs)
 
-    if model_name == "relative":
-        return DepCoarseClassifier(**kwargs)
+    # if model_name == "relative":
+    #     return DepCoarseClassifier(**kwargs)
+
+    if model_name == "distill_head":
+        return DHeadClassifier(**kwargs)
 
 
 class DepEncoder(nn.Module):
@@ -89,11 +91,57 @@ class LSTMEncoder(nn.Module):
         return hidden_state.transpose(0, 1)
 
 
+def cos_loss(hidden1, hidden2):
+    r = F.cosine_similarity(hidden1, hidden2, dim=-1)
+    return r.mean().exp()
+
+
+class ImitationModule(nn.Module):
+    def __init__(self, input_dim, ffn_dim, class_num=512, dropout=0.1):
+        super().__init__()
+
+        self.ffn = nn.Sequential(
+            nn.Linear(input_dim, ffn_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(ffn_dim, class_num),
+            nn.Dropout(dropout)
+        )
+
+        self.action_embedding = nn.Embedding(embedding_dim=input_dim, num_embeddings=class_num, padding_idx=0)
+
+        self.c = torch.zeros((class_num)).float().cuda()
+        self.alpha = 0.9
+
+    def forward(self, x, tokens):
+        # forward
+        logit = self.ffn(x)
+        output = logit.softmax(-1)  # [b, l, class_num]
+        output = output.masked_fill(tokens.eq(1).unsqueeze(-1), 0)
+
+        # regularization
+        length = tokens.ne(1).sum(-1)
+        c = self.alpha * self.c + (1 - self.alpha) * (output.sum(-2).div(length.unsqueeze(-1)).mean(0))  # [class_num]
+        norm_output = (output.pow(2)).div(c)
+        sum_output = norm_output.sum(-1)
+        # 处理0
+        sum_output = sum_output.masked_fill(sum_output.eq(0), 1).unsqueeze(-1)
+        norm_output = norm_output.div(sum_output)
+
+        expect_embedding = output.matmul(self.action_embedding.weight)  # [b, l, d]
+
+        mask = tokens.ne(1)
+        loss = F.kl_div(output[mask].log(), norm_output[mask], reduction="none")
+        l = loss.sum(-1).mean()
+        return expect_embedding, l, output
+
+
 class DepClassifier(BaseFairseqModel):
 
     def __init__(self, args, relative_dep_mat=None, use_two_class=False, **kwargs):
         super().__init__()
         self.args = args
+        self.padding_idx = 0
         self.dep_loss_factor = getattr(self.args, "dep_loss_factor", 1.0)
         if relative_dep_mat is None:
             self.relative_dep_mat = RelativeDepMat(valid_subset=self.args.valid_subset, use_two_class=use_two_class)
@@ -111,9 +159,8 @@ class DepClassifier(BaseFairseqModel):
 
         self.dropout = nn.Dropout(0.33)
 
-        self._add_position = getattr(self.args, "add_position_method", "none")
-        self._add_position = "cat"
-        if self._add_position != "none":
+        self._add_position = getattr(self.args, "add_position_method", "cat")
+        if self._add_position != "cat":
             print("添加position信息: ", self._add_position)
 
         self.relax_dep_mat = getattr(self.args, "relax_dep_mat", False)
@@ -125,13 +172,71 @@ class DepClassifier(BaseFairseqModel):
         else:
             self.mlp_input_dim = args.decoder_embed_dim * 1
 
-    def inference(self, hidden_state, position_embedding, reference, perturb=0.0, **kwargs):
+        self.glat_classifier = getattr(self.args, "glat_classifier", "none")
+        if self.glat_classifier != "none":
+            print("使用glat的方式来训练分类器: ", self.glat_classifier)
 
-        batch_size, _ = reference.size()
+        self.distill_method = getattr(self.args, "distill_method", "none")
+        if self.distill_method != "none":
+            print("蒸馏方式： ", self.distill_method)
+
+        self.share_with_ref = getattr(self.args, "share_with_ref", "none")
+        if self.share_with_ref:
+            # 不同的模型会不一样~
+            print("和以ref做为输入的encoder共享: ", self.share_with_ref)
+
+    def get_random_mask_output(self, mask_length=None, target_token=None, hidden_state=None, reference_embedding=None):
+        # mask_length大，说明模型性能不行，所以多提供reference  ==> mask_length代表的是reference的数目
+        hidden_state = hidden_state.transpose(0, 1)
+        reference_embedding = reference_embedding.transpose(0, 1)
+        reference_mask = get_base_mask(target_token)
+
+        target_score = target_token.clone().float().uniform_()
+        target_score.masked_fill_(~reference_mask, 2.0)
+
+        _, target_rank = target_score.sort(1)
+        target_cutoff = new_arange(target_rank) < mask_length[:, None].long()
+        mask = target_cutoff.scatter(1, target_rank, target_cutoff)  # [b, l]
+        non_mask = ~mask
+        full_mask = torch.cat((non_mask.unsqueeze(-1), mask.unsqueeze(-1)), dim=-1)
+
+        full_embedding = torch.cat((hidden_state.unsqueeze(-1), reference_embedding.unsqueeze(-1)), dim=-1)
+        output_emebdding = (full_embedding * full_mask.unsqueeze(-2)).sum(-1)
+
+        return ~mask, output_emebdding.transpose(0, 1)
+
+    def forward_classifier(self, sample, hidden_state, target_tokens, ref_embedding, position_embedding,
+                           decoder_padding_mask, encoder_out, **kwargs):
+        with torch.no_grad():
+            score, dep_hidden, _ = self._forward_classifier(hidden_state, position_embedding, decoder_padding_mask,
+                                                            encoder_out, target_tokens=target_tokens)
+        loss_mask = None
+
+        other = {}
+        if self.glat_classifier != "none":
+            score = score.detach()
+            sample_ids = sample['id'].cpu().tolist()
+            reference = self.get_reference(sample_ids, target_tokens)
+            reference_mask = reference != self.padding_idx
+            label = self.get_label(score, target_tokens, reference_mask, use_MST=False, return_head=True)
+            mask_length = self.get_mask_num(label, reference, reference_mask)
+
+            loss_mask, hidden_state = self.get_random_mask_output(mask_length, target_tokens, hidden_state,
+                                                                  ref_embedding)
+            score, dep_hidden, other = self._forward_classifier(hidden_state, position_embedding, decoder_padding_mask,
+                                                                encoder_out, target_tokens=target_tokens)
+
+        return score, loss_mask, dep_hidden, other
+
+    def inference(self, hidden_state, position_embedding, target_tokens, perturb=0.0, **kwargs):
+
+        batch_size, _ = target_tokens.size()
         assert batch_size == 1, u"infernece仅仅支持batch=1"
-        score = self.forward_classifier(hidden_state, position_embedding, decoder_padding_mask=reference.eq(1),
-                                        encoder_out=kwargs.get("encoder_out", None))
-        _label = self.get_label(score, reference=reference)
+        score, dep_hidden, _ = self._forward_classifier(hidden_state, position_embedding,
+                                                        target_tokens=target_tokens,
+                                                        decoder_padding_mask=target_tokens.eq(1),
+                                                        **kwargs)
+        _label = self.get_label(score, target_tokens=target_tokens)
         _label[0][0] = 0
         _label[0][-1] = 0
         _label[0][:, 0] = 0
@@ -140,6 +245,11 @@ class DepClassifier(BaseFairseqModel):
         if self.relax_dep_mat:
             mask = (_label == 1) | (_label.transpose(1, 2) == 1)
             _label.masked_fill_(mask, 1)
+
+        def _position(target):
+            left = ((position - 1) == target).sum().item()
+            right = ((position + 1) == target).sum().item()
+            return left + right
 
         if kwargs.get("eval_accuracy", False) or perturb != 0.0:
             # sample = kwargs['sample']
@@ -156,7 +266,16 @@ class DepClassifier(BaseFairseqModel):
             # correct = (target == predict).sum().item()
             # set_key_value("all", all)
             # set_key_value("correct", correct)
-
+            #
+            # # 计算和位置的相关性
+            # position = torch.range(1, all).cuda()
+            # predict_pos = _position(predict)
+            # target_pos = _position(target)
+            # a = ((target == predict) & (predict == (position - 1))).sum().item()
+            # b = ((target == predict) & (predict == (position + 1))).sum().item()
+            # set_key_value("predict_pos", predict_pos)
+            # set_key_value("target_pos", target_pos)
+            # set_key_value("correct_pos", a + b)
             sample = kwargs.get("sample", None)
             sample_ids = sample['id'].cpu().tolist()
             reference = sample["target"]
@@ -167,9 +286,10 @@ class DepClassifier(BaseFairseqModel):
             target = dependency_mat
             b, l, _ = predict.size()
             all = b * l * l
-            correct = (target == predict).sum().item()
-            set_diff_tokens(correct)
-            set_all_token(all)
+
+            # correct = (target == predict).sum().item()
+            # set_diff_tokens(correct)
+            # set_all_token(all)
 
             # 阈值分析
             # score = F.sigmoid(score)
@@ -209,12 +329,16 @@ class DepClassifier(BaseFairseqModel):
                 set_key_value("target_" + name[i], target_i)
                 set_key_value("correct_" + name[i], correct_i)
 
-        return _label
+        return _label, dep_hidden
 
     @staticmethod
     def add_args(parser):
         parser.add_argument('--dep-loss-factor', default=1.0, type=float)
         parser.add_argument('--encoder-dep-input', type=str, default="transformer")  # lstm
+        parser.add_argument('--glat-classifier', type=str, default="none")  # all、input
+        parser.add_argument('--distill-method', type=str, default="none")  # kl、mse
+        parser.add_argument('--imitation', action="store_true")
+        parser.add_argument('--no-mlp', action="store_true")
 
         """ 二分类器相关"""
         parser.add_argument('--positive-class-factor', type=float, default=1.0)
@@ -223,22 +347,66 @@ class DepClassifier(BaseFairseqModel):
         parser.add_argument('--relax-dep-mat', action="store_true")
         parser.add_argument('--gumbel-softmax-mat', action="store_true")
         parser.add_argument('--threshold', type=float, default=0.556)
+        parser.add_argument('--classifier-method', type=str, default="concat")  # biaffine
 
         """ 依存树相关"""
-        parser.add_argument('--add-position-method', type=str, default="none")  # 如何使用position信息 add、none、cat
+        parser.add_argument('--add-position-method', type=str, default="cat")  # 如何使用position信息 add、none、cat
         parser.add_argument('--use-MST', action="store_true")
 
-    def inference_accuracy(self, hidden_state, position_embedding, compute_loss, target_token, sample, eval_accuracy,
-                           result_mat, encoder_out, **kwargs):
-        loss, all, correct = 0, 0, 0
-        score, predict, head_ref, train_mat = self.predict(hidden_state, position_embedding, sample, target_token,
-                                                           result_mat=result_mat, encoder_out=encoder_out)
-        if compute_loss:
-            loss = self.compute_loss(predict, head_ref)
-        if eval_accuracy:
-            all, correct = self.compute_accuracy(predict, head_ref, score, target_token)
+        parser.add_argument('--share-with-ref', type=str, default="none")  # encoder、W、encoderW
 
-        return loss, all, correct, train_mat
+    def inference_accuracy(self, compute_loss, eval_accuracy=False, target_tokens=None, **kwargs):
+        loss, all, correct = 0, 0, 0
+        score, predict, head_ref, train_mat, reference_mask, dep_hidden, other = self.predict(
+            target_tokens=target_tokens,
+            **kwargs)
+        if compute_loss:
+            ref_embedding = kwargs.get("ref_embedding", None)
+            kwargs['hidden_state'] = ref_embedding
+            decoder_padding_mask = target_tokens.eq(1)
+            teacher_score, teacher_hidden, teacher_other = self.get_teacher_hidden(
+                decoder_padding_mask=decoder_padding_mask, target_tokens=target_tokens,
+                teacher=True, **kwargs)
+            if teacher_score is not None:
+                teacher_score = teacher_score[reference_mask]
+            loss = self.compute_loss(predict, head_ref, dep_hidden=dep_hidden, teacher_hidden=teacher_hidden,
+                                     teacher_score=teacher_score, reference_mask=reference_mask, other=other,
+                                     teacher_other=teacher_other)
+        if eval_accuracy:
+            all, correct = self.compute_accuracy(predict, head_ref, score, target_tokens, mask=reference_mask)
+
+        return loss, all, correct, train_mat, dep_hidden
+
+    def get_teacher_hidden(self, **kwargs):
+        if self.share_with_ref in ["encoderW", "encoder"]:  # 共享encoder和W矩阵
+            teacher_score, teacher_hidden, teacher_other = self._forward_classifier(**kwargs)
+            return teacher_score, teacher_hidden, teacher_other
+
+        return None, None, None
+
+    def predict(self, sample, target_tokens, result_mat, **kwargs):
+
+        decoder_padding_mask = target_tokens.eq(1)
+        score, loss_mask, dep_hidden, other = self.forward_classifier(sample=sample, target_tokens=target_tokens,
+                                                                      decoder_padding_mask=decoder_padding_mask,
+                                                                      **kwargs)
+
+        sample_ids = sample['id'].cpu().tolist()
+        reference = self.get_reference(sample_ids, target_tokens)
+
+        reference_mask = reference != self.padding_idx
+        if loss_mask is not None and self.glat_classifier == "input":
+            if len(loss_mask.shape) != len(reference_mask.shape):
+                loss_mask = loss_mask.unsqueeze(-1)
+            reference_mask.masked_fill_(~loss_mask, False)
+        mat = None
+        if result_mat:
+            mat = self.get_label(score, target_tokens, reference_mask)
+
+        predict = score[reference_mask]
+        dependency_mat = reference[reference_mask]
+
+        return score, predict, dependency_mat, mat, reference_mask, dep_hidden, other
 
     def add_position(self, hidden_state, position):
         # 编码之后调用
@@ -253,59 +421,76 @@ class DepClassifier(BaseFairseqModel):
 
 
 class DepHeadClassifier(DepClassifier):
-    def __init__(self, args, relative_dep_mat=None, use_two_class=False, **kwargs):
+    def __init__(self, args, relative_dep_mat=None, use_two_class=False, head_tree=None, **kwargs):
         super().__init__(args, relative_dep_mat, use_two_class, **kwargs)
 
+        self.padding_idx = -1
         self.use_MST = getattr(self.args, "use_MST", False)
         if self.use_MST:
             print("使用最小生成树，目前仅仅在生成矩阵（计算准确率+generate时）使用")
 
-        self.biaffine_attention = BiaffineAttentionDependency(args, input_dim=self.mlp_input_dim)
+        if head_tree is None:
+            head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
 
-    def compute_loss(self, outputs, targets):
+        self.no_mlp = getattr(self.args, "no_mlp", False)
+        self.biaffine_attention = BiaffineAttentionDependency(args, input_dim=self.mlp_input_dim, head_tree=head_tree,
+                                                              no_mlp=self.no_mlp)
+
+        self.teacher_biaffine = None
+        if self.share_with_ref == "encoder":
+            self.teacher_biaffine = BiaffineAttentionDependency(args, input_dim=self.mlp_input_dim, head_tree=head_tree,
+                                                                no_mlp=self.no_mlp)
+
+        self.imitation = getattr(self.args, "imitation", False)
+        if self.imitation:
+            self.imitation_module = ImitationModule(input_dim=self.mlp_input_dim, ffn_dim=self.mlp_input_dim * 2,
+                                                    dropout=args.dropout)
+
+    def compute_loss(self, outputs, targets, teacher_score=None, other=None, **kwargs):
         # 计算损失的肯定是依存树预测损失
-        return self.biaffine_attention.compute_loss(outputs, targets) * self.dep_loss_factor
+        b_loss = self.biaffine_attention.compute_loss(outputs, targets) * self.dep_loss_factor
+        loss = {"dep_classifier": {"loss": b_loss}}
+        if teacher_score is not None:
+            teacher_loss = self.biaffine_attention.compute_loss(teacher_score, targets)
+            if teacher_loss.item() != 0:
+                scale = max(min(b_loss.item() / teacher_loss.item(), 5), 1)
+                teacher_loss = teacher_loss * scale
+            loss.update({"teacher_dep": {"loss": teacher_loss}})
+        return loss
 
-    def forward_classifier(self, hidden_state, position_embedding, decoder_padding_mask, encoder_out):
+    def _forward_classifier(self, hidden_state, position_embedding, decoder_padding_mask, encoder_out, teacher=False,
+                            target_tokens=None, **kwargs):
         hidden_state = self.dropout(hidden_state)
         if self.encoder is not None:
             hidden_state = self.encoder(encoder_out, hidden_state, decoder_padding_mask)
         else:
             hidden_state = hidden_state.transpose(0, 1)
 
-        hidden_state = self.add_position(hidden_state, position_embedding)
-        hidden_state = self.dropout(hidden_state)
-        output = self.biaffine_attention.forward_classifier(hidden_state)  # [b, tgt_len, tgt_len]
-        return output
+        hidden_state2 = self.add_position(hidden_state, position_embedding)
+        hidden_state2 = self.dropout(hidden_state2)
 
-    def get_reference(self, sample_ids):
+        other = {}
+        if self.imitation:
+            action, imitation_loss, output = self.imitation_module(hidden_state2, target_tokens)
+            hidden_state2 = hidden_state2 + action
+            other = {"action": action, "imitation_loss": imitation_loss, "output": output}
+
+        if teacher and self.teacher_biaffine is not None:
+            output, dep_hidden = self.teacher_biaffine.forward_classifier(hidden_state2,
+                                                                          return_hidden=True)
+        else:
+            output, dep_hidden = self.biaffine_attention.forward_classifier(hidden_state2,
+                                                                            return_hidden=True)  # [b, tgt_len, tgt_len]
+        return output, hidden_state, other
+
+    def get_reference(self, sample_ids, target_tokens=None):
         head_ref = self.biaffine_attention.get_reference(sample_ids)
         return head_ref
 
     def get_head(self, score):
         return score.argmax(-1)
 
-    def predict(self, hidden_state, position_embedding, sample, reference, result_mat=False, encoder_out=None,
-                **kwargs):
-
-        score = self.forward_classifier(hidden_state, position_embedding, decoder_padding_mask=(reference.eq(1)),
-                                        encoder_out=encoder_out)
-
-        sample_ids = sample['id'].cpu().tolist()
-        head_ref = self.get_reference(sample_ids)
-
-        head_mask = head_ref != -1
-
-        predict = score[head_mask]
-        head_ref = head_ref[head_mask]
-
-        mat = None
-        if result_mat:
-            mat = self.get_label(score, reference)
-
-        return score, predict, head_ref, mat
-
-    def compute_accuracy(self, predict_head, head_ref, score, reference):
+    def compute_accuracy(self, predict_head, head_ref, score, reference, mask=None):
         if self.use_MST:
             predict = []
             batch_size, tgt_len, tgt_len = score.size()
@@ -318,7 +503,8 @@ class DepHeadClassifier(DepClassifier):
                 predict.append(head)
             predict = head_ref.new_tensor(predict)
             base_mask[:, 0] = False
-            predict = predict[base_mask]
+            if mask is not None:
+                predict = predict[mask]
         else:
             predict = self.get_head(predict_head)
         target = head_ref
@@ -326,21 +512,25 @@ class DepHeadClassifier(DepClassifier):
         correct = (target == predict).sum().item()
         return all, correct
 
-    def get_label(self, score, reference):
+    def get_label(self, score, target_tokens=None, mask=None, use_MST=True, return_head=False):
         # score: [b, l, l]
+        """ 只返回head时不会使用MST计算一下头"""
         dep_mat = score.new_zeros(score.size()).long()
 
-        if not self.use_MST:
+        if not (self.use_MST and use_MST):
             all_head = self.get_head(score)
+            if return_head:
+                return all_head
 
-        batch_size, tgt_len = reference.shape
+        batch_size, tgt_len = target_tokens.shape
         score = F.softmax(score, dim=-1)
         for i in range(batch_size):
-            ref_len = (reference[i] != 1).sum().item()
-            base_mask = get_base_mask(reference[i])
+            ref_len = (target_tokens[i] != 1).sum().item()
+            base_mask = get_base_mask(target_tokens[i])
             base_mask[0] = True
-            if self.use_MST:
-                head = self.biaffine_attention.parser_tree(score.squeeze(0).cpu().numpy(), base_mask.sum().item(),
+            if self.use_MST and use_MST:
+                head = self.biaffine_attention.parser_tree(score.squeeze(0).detach().cpu().numpy(),
+                                                           base_mask.sum().item(),
                                                            base_mask.int().cpu().numpy())
             else:
                 head = all_head[i]
@@ -362,153 +552,281 @@ class DepHeadClassifier(DepClassifier):
 
         return dep_mat
 
+    def get_mask_num(self, label, reference, reference_mask):
+        diff = ((label != reference) & reference_mask).sum(-1).detach()
+        mask_length = (diff * 0.5).round()
+        return mask_length
 
-class DepCoarseClassifier(DepClassifier):
-    def __init__(self, args, relative_dep_mat=None, use_two_class=False):
-        super().__init__(args, relative_dep_mat, use_two_class)
 
-        self.dep_focal_loss = getattr(self.args, "dep_focal_loss", False)
-        if self.dep_focal_loss:
-            print("use focal loss: ", self.dep_focal_loss)
+class DoubleClassifier(DepClassifier):
+    def __init__(self, args, relative_dep_mat=None, use_two_class=False, **kwargs):
+        super().__init__(args, relative_dep_mat, use_two_class, **kwargs)
+        self.student_encoder = None
+        self.teacher_encoder = None
 
-        self.gumbel_softmax_mat = getattr(self.args, "gumbel_softmax_mat", False)
-        if self.gumbel_softmax_mat:
-            print("使用gumbel-softmax获得依存矩阵")
+    def get_imitation(self, teacher_output, student_output):
+        # 优化交叉熵等效于优化相对熵
+        _ce_loss = F.kl_div(student_output.log(), teacher_output, reduction="none").sum(-1).mean()
 
-        self.classifier_mutual_method = getattr(self.args, "classifier_mutual_method", "none")
-        if self.classifier_mutual_method != "none":
-            print("是否使用互信息来解决类别不均衡问题: ", self.classifier_mutual_method)
+        return _ce_loss
 
-            if self.classifier_mutual_method in ["logit", "bias"]:
-                self.log_prior = self.mutual_logits()
+    def get_label(self, score, target_tokens=None, mask=None, use_MST=True, return_head=False):
+        return self.student_encoder.get_label(score, target_tokens, mask, use_MST, return_head)
 
-        self.threshold = getattr(self.args, "threshold", 0.556)
-        print("threshold: ", self.threshold)
+    def _forward_classifier(self, hidden_state, position_embedding, decoder_padding_mask, encoder_out, **kwargs):
+        return self.student_encoder._forward_classifier(hidden_state, position_embedding, decoder_padding_mask,
+                                                        encoder_out, **kwargs)
 
-        self.mlp_dim = 400
-        # self.mlp_dim = self.mlp_input_dim
-        self.class_num = 3
-        if use_two_class and not self.gumbel_softmax_mat:
-            self.class_num = 1
-            self.loss = nn.BCEWithLogitsLoss(reduction='none')
+    def get_mask_num(self, label, reference, reference_mask):
+        return self.student_encoder.get_mask_num(label, reference, reference_mask)
 
-        if self.gumbel_softmax_mat:
-            self.class_num = 2
+    def compute_loss(self, outputs, targets, dep_hidden=None, teacher_hidden=None, teacher_score=None, other=None,
+                     reference_mask=None, teacher_other=None):
+        loss = self.student_encoder.compute_loss(outputs, targets, None)
 
-        self.mlp_output = nn.Sequential(
-            nn.Linear(self.mlp_input_dim * 2, self.mlp_dim),
-            nn.Tanh(),
-            nn.Linear(self.mlp_dim, self.class_num)
-        )
-        self.positive_class_factor = getattr(self.args, "positive_class_factor", 1.0)
+        if teacher_score is not None:
+            teacher_loss = self.teacher_encoder.compute_loss(teacher_score, targets)
+            loss.update({"teacher_dep": teacher_loss.get("dep_classifier")})
 
-    def mutual_logits(self):
-        prior = [0.143, 0.857]
-        log_prior = np.log(prior)
-        tau = 1.0
-        delta = (log_prior[1] - log_prior[0]) * tau
-        return delta
+        def _dep_hidden(index):
+            return dep_hidden[index][reference_mask]
 
-    def apply_init_bias(self):
-        self.mlp_output[-1].bias.data = torch.FloatTensor([self.log_prior])
+        def _teacher_hidden(index):
+            return teacher_hidden[index][reference_mask].detach()
 
-    def compute_loss(self, outputs, targets):
+        if self.distill_method == "mse":
+            if teacher_hidden is not None and dep_hidden is not None:
+                if isinstance(dep_hidden, tuple):
+                    l1 = F.mse_loss(_dep_hidden(0), _teacher_hidden(0), reduction="none").sum(-1).mean()
+                    l2 = F.mse_loss(_dep_hidden(1), _teacher_hidden(1), reduction="none").sum(-1).mean()
+                    mse_loss = l1 + l2
+                else:
+                    mse_loss = F.mse_loss(dep_hidden[reference_mask], teacher_hidden[reference_mask].detach(),
+                                          reduction="none").sum(-1).mean()
 
-        targets = targets - 1  # 去除pad类别
-        # 多分类
-        if self.class_num != 1:
-            logits = F.log_softmax(outputs, dim=-1)
-            losses = F.nll_loss(logits, targets.to(logits.device), reduction='none')
-        else:
-            losses = self.loss(outputs.squeeze(-1), targets.float())
+                loss.update({"distill_loss": {"loss": mse_loss * 0.001}})
 
-        if self.positive_class_factor != 1.0:
-            weights = losses.new_ones(size=losses.size()).float()
-            weights.masked_fill_(targets == 0, self.positive_class_factor)
-            losses = losses * weights
+        if self.distill_method == "kl":
+            if teacher_score is not None and outputs is not None:
+                l = F.kl_div(outputs.log_softmax(-1), teacher_score.softmax(-1).detach(), reduction='none')
+                l = l.sum(-1).mean()
+                loss.update({"distill_kl_loss": {"loss": l}})
 
-        if self.dep_focal_loss:
-            p_logits = F.sigmoid(outputs)
-            neg_logits = 1 - p_logits
-            p_logits = p_logits.masked_fill(targets == 1, 1).detach()
-            p_logits = p_logits * p_logits
-            neg_logits = neg_logits.masked_fill(targets == 0, 1).detach()
-            neg_logits = neg_logits * neg_logits
-            losses = losses * p_logits * neg_logits
+        if self.distill_method == "cos":
+            if teacher_hidden is not None and dep_hidden is not None:
+                if isinstance(dep_hidden, tuple):
+                    l1 = cos_loss(_dep_hidden(0), _teacher_hidden(0))
+                    l2 = cos_loss(_dep_hidden(1), _teacher_hidden(1))
+                    _cos_loss = l1 + l2
+                else:
+                    _cos_loss = cos_loss(dep_hidden[reference_mask], teacher_hidden[reference_mask].detach())
+                loss.update({"distill_cos_loss": {"loss": _cos_loss}})
 
-        loss = mean_ds(losses)
+        if other is not None and len(other) > 0:
+            teacher_imitation = teacher_other.get('imitation_loss', None)
+            teacher_action = teacher_other.get("output", None)[reference_mask]
+            student_action = other.get("output", None)[reference_mask]
+            imitation = self.get_imitation(teacher_action, student_action)
+            loss.update({
+                "teacher_imitation": {"loss": teacher_imitation},
+                "imitation_loss": {"loss": imitation * 10}
+            })
 
-        loss = loss * self.dep_loss_factor
         return loss
 
-    def forward_classifier(self, hidden_state, position_embedding, decoder_padding_mask, encoder_out):
+    def get_reference(self, sample_ids, target_tokens=None):
+        return self.student_encoder.get_reference(sample_ids, target_tokens)
 
-        hidden_state = self.dropout(hidden_state)
-        if self.encoder is not None:
-            hidden_state = self.encoder(encoder_out, hidden_state, decoder_padding_mask)
-        else:
-            hidden_state = hidden_state.transpose(0, 1)
+    def get_head(self, score):
+        return self.student_encoder.get_head(score)
 
-        hidden_state = self.add_position(hidden_state, position_embedding)
-        hidden_state = self.dropout(hidden_state)
-        batch_size, seq_len, hidden_dim = hidden_state.size()
-        a = hidden_state.unsqueeze(1).repeat(1, seq_len, 1, 1)  # [b, l, l, d]
-        b = hidden_state.unsqueeze(2).repeat(1, 1, seq_len, 1)  # [b, l, l, d]
-        feature = torch.cat((a, b), dim=-1)
+    def compute_accuracy(self, predict_head, head_ref, score, reference, mask=None):
+        return self.student_encoder.compute_accuracy(predict_head, head_ref, score, reference, mask)
 
-        score = self.mlp_output(feature)  # [b, l, l, 3]
+    def get_teacher_hidden(self, hidden_state, position_embedding, decoder_padding_mask, encoder_out, **kwargs):
+        return self.teacher_encoder._forward_classifier(hidden_state, position_embedding, decoder_padding_mask,
+                                                        encoder_out, **kwargs)
 
-        if self.classifier_mutual_method == "logit":
-            assert self.class_num == 1, "只支持二分类打分"
-            score = score + self.log_prior
-        return score.squeeze(-1)
 
-    def sample_mat(self, score):
-        mat = F.gumbel_softmax(score, hard=True, tau=1)
-        if len(mat.size()) == 4:
-            result = mat[:, :, :, 1] + 1  # 相关
-        if len(mat.size()) == 3:
-            result = mat[:, :, 1] + 1
-        if len(mat.size()) == 2:
-            result = mat[:, 1] + 1
-        return result.long()
+class DHeadClassifier(DoubleClassifier):
 
-    def get_label(self, score, reference_mat=None, **kwargs):
-        """预测->依存矩阵"""
-        if self.gumbel_softmax_mat:
-            assert self.class_num == 2, "gumbel softmax只支持分类呀~"
-            mat = self.sample_mat(score)
-            return mat
-        if self.class_num == 1:
-            mat = (F.sigmoid(score) > self.threshold).long() + 1
-        else:
-            _score, _label = F.log_softmax(score, dim=-1).max(-1)
-            mat = _label + 1
+    def __init__(self, args, relative_dep_mat=None, use_two_class=False, **kwargs):
+        super().__init__(args, relative_dep_mat, use_two_class, **kwargs)
+        head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
+        print("--------------------student model : ----------------------")
+        self.student_encoder = DepHeadClassifier(args, relative_dep_mat, use_two_class, head_tree, **kwargs)
 
-        return mat
+        print("--------------------teacher model : ----------------------")
+        args.glat_classifier = False
+        self.teacher_encoder = DepHeadClassifier(args, relative_dep_mat, use_two_class, head_tree, **kwargs)
 
-    def predict(self, hidden_state, position_embedding, sample, reference, result_mat=False, encoder_out=None):
+        self.padding_idx = self.student_encoder.padding_idx
 
-        score = self.forward_classifier(hidden_state, position_embedding, decoder_padding_mask=reference.eq(1),
-                                        encoder_out=encoder_out)
 
-        sample_ids = sample['id'].cpu().tolist()
-        dependency_mat = self.relative_dep_mat.get_dependency_mat(sample_ids, reference, training=self.training)
-
-        reference_mask = dependency_mat != 0
-        mat = None
-        if result_mat:
-            _label = self.get_label(score)
-            mat = _label.masked_fill(~reference_mask, 0)
-
-        predict = score[reference_mask]
-        dependency_mat = dependency_mat[reference_mask]
-
-        return score, predict, dependency_mat, mat
-
-    def compute_accuracy(self, predict, target, score, target_token, **kwargs):
-        _label = self.get_label(predict)
-
-        all = len(_label)
-        correct = (target == _label).sum().item()
-        return all, correct
+#
+class DepCoarseClassifier(DepClassifier):
+    pass
+#     def __init__(self, args, relative_dep_mat=None, use_two_class=False, **kwargs):
+#         super().__init__(args, relative_dep_mat, use_two_class)
+#
+#         self.padding_idx = 0
+#         self.dep_focal_loss = getattr(self.args, "dep_focal_loss", False)
+#         if self.dep_focal_loss:
+#             print("use focal loss: ", self.dep_focal_loss)
+#
+#         self.gumbel_softmax_mat = getattr(self.args, "gumbel_softmax_mat", False)
+#         if self.gumbel_softmax_mat:
+#             print("使用gumbel-softmax获得依存矩阵")
+#
+#         self.classifier_mutual_method = getattr(self.args, "classifier_mutual_method", "none")
+#         if self.classifier_mutual_method != "none":
+#             print("是否使用互信息来解决类别不均衡问题: ", self.classifier_mutual_method)
+#
+#             if self.classifier_mutual_method in ["logit", "bias"]:
+#                 self.log_prior = self.mutual_logits()
+#
+#         self.threshold = getattr(self.args, "threshold", 0.556)
+#         print("threshold: ", self.threshold)
+#
+#         self.mlp_dim = 400
+#         # self.mlp_dim = self.mlp_input_dim
+#         self.class_num = 3
+#         if use_two_class and not self.gumbel_softmax_mat:
+#             self.class_num = 1
+#             self.loss = nn.BCEWithLogitsLoss(reduction='none')
+#
+#         if self.gumbel_softmax_mat:
+#             self.class_num = 2
+#
+#         self.classifier_method = getattr(self.args, "classifier_method", "concat")
+#         if self.classifier_method == "biaffine":
+#             self.mlp_output = nn.Sequential(
+#                 nn.Linear(self.mlp_input_dim, self.mlp_dim),
+#                 nn.LeakyReLU(),
+#                 nn.Dropout(0.33))
+#             self.W_arc = nn.Parameter(orthogonal_(
+#                 torch.empty(self.mlp_dim + 1, self.mlp_dim).cuda()
+#             ), requires_grad=True)
+#         else:
+#             self.mlp_output = nn.Sequential(
+#                 nn.Linear(self.mlp_input_dim * 2, self.mlp_dim),
+#                 nn.Tanh(),
+#                 nn.Dropout(0.3),
+#                 nn.Linear(self.mlp_dim, self.class_num),
+#             )
+#         self.positive_class_factor = getattr(self.args, "positive_class_factor", 1.0)
+#
+#     def get_reference(self, sample_ids, target_tokens):
+#         dependency_mat = self.relative_dep_mat.get_dependency_mat(sample_ids, target_tokens, training=self.training)
+#         return dependency_mat
+#
+#     def mutual_logits(self):
+#         prior = [0.143, 0.857]
+#         log_prior = np.log(prior)
+#         tau = 1.0
+#         delta = (log_prior[1] - log_prior[0]) * tau
+#         return delta
+#
+#     def apply_init_bias(self):
+#         self.mlp_output[-1].bias.data = torch.FloatTensor([self.log_prior])
+#
+#     def get_mask_num(self, label, reference, reference_mask):
+#         diff = ((label != reference) & reference_mask).sum(-1).sum(-1).detach()
+#         mask_length = (diff.pow(1 / 2) * 0.5).round()
+#         return mask_length
+#
+#     def compute_loss(self, outputs, targets, **kwargs):
+#
+#         targets = targets - 1  # 去除pad类别
+#         # 多分类
+#         if self.class_num != 1:
+#             logits = F.log_softmax(outputs, dim=-1)
+#             losses = F.nll_loss(logits, targets.to(logits.device), reduction='none')
+#         else:
+#             losses = self.loss(outputs.squeeze(-1), targets.float())
+#
+#         if self.positive_class_factor != 1.0:
+#             weights = losses.new_ones(size=losses.size()).float()
+#             weights.masked_fill_(targets == 0, self.positive_class_factor)
+#             losses = losses * weights
+#
+#         if self.dep_focal_loss:
+#             p_logits = F.sigmoid(outputs)
+#             neg_logits = 1 - p_logits
+#             p_logits = p_logits.masked_fill(targets == 1, 1).detach()
+#             p_logits = p_logits * p_logits
+#             neg_logits = neg_logits.masked_fill(targets == 0, 1).detach()
+#             neg_logits = neg_logits * neg_logits
+#             losses = losses * p_logits * neg_logits
+#
+#         loss = mean_ds(losses)
+#
+#         loss = loss * self.dep_loss_factor
+#         loss = {"dep_classifier": {"loss": loss}}
+#         return loss
+#
+#     def _forward_classifier(self, hidden_state, position_embedding, decoder_padding_mask, encoder_out, **kwargs):
+#
+#         hidden_state = self.dropout(hidden_state)
+#         if self.encoder is not None:
+#             hidden_state = self.encoder(encoder_out, hidden_state, decoder_padding_mask)
+#         else:
+#             hidden_state = hidden_state.transpose(0, 1)
+#
+#         hidden_state = self.add_position(hidden_state, position_embedding)
+#         hidden_state = self.dropout(hidden_state)
+#
+#         if self.classifier_method == "biaffine":
+#             feature = self.mlp_output(hidden_state)
+#             batch_size, seq_len, hidden_dim = hidden_state.size()
+#             arc_dep = torch.cat((feature, torch.ones(batch_size, seq_len, 1).cuda()),
+#                                 dim=-1)  # batch * trg_len * (dim+1)
+#
+#             score = arc_dep.matmul(self.W_arc).matmul(feature.transpose(1, 2))
+#             dep_hidden = feature
+#         else:
+#             batch_size, seq_len, hidden_dim = hidden_state.size()
+#             a = hidden_state.unsqueeze(1).repeat(1, seq_len, 1, 1)  # [b, l, l, d]
+#             b = hidden_state.unsqueeze(2).repeat(1, 1, seq_len, 1)  # [b, l, l, d]
+#             feature = torch.cat((a, b), dim=-1)
+#             score = self.mlp_output(feature)  # [b, l, l, 3]
+#             dep_hidden = None
+#
+#         if self.classifier_mutual_method == "logit":
+#             assert self.class_num == 1, "只支持二分类打分"
+#             score = score + self.log_prior
+#         return score.squeeze(-1), dep_hidden
+#
+#     def sample_mat(self, score):
+#         mat = F.gumbel_softmax(score, hard=True, tau=1)
+#         if len(mat.size()) == 4:
+#             result = mat[:, :, :, 1] + 1  # 相关
+#         if len(mat.size()) == 3:
+#             result = mat[:, :, 1] + 1
+#         if len(mat.size()) == 2:
+#             result = mat[:, 1] + 1
+#         return result.long()
+#
+#     def get_label(self, score, target_tokens=None, reference_mask=None, **kwargs):
+#         """预测->依存矩阵"""
+#         if self.gumbel_softmax_mat:
+#             assert self.class_num == 2, "gumbel softmax只支持分类呀~"
+#             mat = self.sample_mat(score)
+#             return mat
+#         if self.class_num == 1:
+#             mat = (F.sigmoid(score) > self.threshold).long() + 1
+#         else:
+#             _score, _label = F.log_softmax(score, dim=-1).max(-1)
+#             mat = _label + 1
+#
+#         if reference_mask is not None:
+#             mat = mat.masked_fill(~reference_mask, self.padding_idx)
+#
+#         return mat
+#
+#     def compute_accuracy(self, predict, target, score, target_token, **kwargs):
+#         _label = self.get_label(predict)
+#
+#         all = len(_label)
+#         correct = (target == _label).sum().item()
+#         return all, correct
