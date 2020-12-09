@@ -4,6 +4,7 @@ import torch
 
 def load_relative_tree(dependency_tree_path):
     """ 不需要add_one """
+    print(dependency_tree_path)
     relative_dependency_mat = []
 
     with open(dependency_tree_path, "r") as f:
@@ -161,7 +162,7 @@ class DepHeadTree(DepTree):
     def get_dep_tree(self, valid_subset="valid", only_valid=False, dep_file="", **kwargs):
 
         dir_name = self.get_file_dir(dep_file)
-
+        print(dir_name)
         if not only_valid:
             train_dependency_tree_head = load_dependency_head_tree(
                 dependency_tree_path=dir_name + "dependency_head_2.train.log",
@@ -187,6 +188,7 @@ class RelativeDepMat(DepTree):
         # print("dep_relative_mat: ", prefix)
 
         dir_name = self.get_file_dir(dep_file)
+        print(dir_name)
 
         if valid_subset == "test":
             only_valid = True

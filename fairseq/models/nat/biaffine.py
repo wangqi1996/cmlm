@@ -83,7 +83,7 @@ class Tarjan:
 
 
 class BiaffineAttentionDependency(nn.Module):
-    def __init__(self, args, input_dim, head_tree=None, no_mlp=False):
+    def __init__(self, args, input_dim, head_tree=None, no_mlp=False, dep_file=''):
 
         super().__init__()
         self.args = args
@@ -109,7 +109,7 @@ class BiaffineAttentionDependency(nn.Module):
         ), requires_grad=True)
 
         if head_tree is None:
-            self.head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
+            self.head_tree = DepHeadTree(valid_subset=self.args.valid_subset, dep_file=dep_file)
         else:
             self.head_tree = head_tree
 

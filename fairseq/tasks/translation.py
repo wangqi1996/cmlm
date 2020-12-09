@@ -286,7 +286,7 @@ class TranslationTask(FairseqTask):
             self.sequence_generator = self.build_generator([model], Namespace(**gen_args))
         return model
 
-    def valid_step(self, sample, model, criterion):
+    def valid_step(self, sample, model, criterion, **kwargs):
 
         # 看是否需要获取dependency_mat
         special_input = model.get_special_input(sample)

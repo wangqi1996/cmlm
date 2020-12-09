@@ -74,6 +74,8 @@ class LSTMEncoder(nn.Module):
         self.attention = BlockedDecoderLayer(args, no_encoder_attn=False, relative_keys=rel_keys,
                                              relative_vals=rel_vals)
 
+        self.dropout = nn.Dropout(args.dropout)
+
     def forward(self, encoder_out, hidden_state, decoder_padding_mask):
         length = (~decoder_padding_mask).long().sum(-1)
         unpaded_reference = nn.utils.rnn.pack_padded_sequence(hidden_state, lengths=length,
@@ -81,6 +83,7 @@ class LSTMEncoder(nn.Module):
         hidden_state, _ = self.lstm(unpaded_reference)
         hidden_state, _ = nn.utils.rnn.pad_packed_sequence(hidden_state, batch_first=False, padding_value=1)
 
+        hidden_state = self.dropout(hidden_state)
         hidden_state, layer_attn, _ = self.attention(
             hidden_state,
             encoder_out.encoder_out if encoder_out is not None else None,
@@ -144,7 +147,8 @@ class DepClassifier(BaseFairseqModel):
         self.padding_idx = 0
         self.dep_loss_factor = getattr(self.args, "dep_loss_factor", 1.0)
         if relative_dep_mat is None:
-            self.relative_dep_mat = RelativeDepMat(valid_subset=self.args.valid_subset, use_two_class=use_two_class)
+            self.relative_dep_mat = RelativeDepMat(valid_subset=self.args.valid_subset, use_two_class=use_two_class,
+                                                   **kwargs)
         else:
             self.relative_dep_mat = relative_dep_mat
 
@@ -168,9 +172,9 @@ class DepClassifier(BaseFairseqModel):
             print("generate时, relax模型")
 
         if self._add_position == "cat":
-            self.mlp_input_dim = args.decoder_embed_dim + 278
+            self.mlp_input_dim = args.decoder_embed_dim * 2
         else:
-            self.mlp_input_dim = args.decoder_embed_dim * 1
+            self.mlp_input_dim = args.decoder_embed_dim
 
         self.glat_classifier = getattr(self.args, "glat_classifier", "none")
         if self.glat_classifier != "none":
@@ -182,7 +186,6 @@ class DepClassifier(BaseFairseqModel):
 
         self.share_with_ref = getattr(self.args, "share_with_ref", "none")
         if self.share_with_ref:
-            # 不同的模型会不一样~
             print("和以ref做为输入的encoder共享: ", self.share_with_ref)
 
     def get_random_mask_output(self, mask_length=None, target_token=None, hidden_state=None, reference_embedding=None):
@@ -421,7 +424,7 @@ class DepClassifier(BaseFairseqModel):
 
 
 class DepHeadClassifier(DepClassifier):
-    def __init__(self, args, relative_dep_mat=None, use_two_class=False, head_tree=None, **kwargs):
+    def __init__(self, args, relative_dep_mat=None, use_two_class=False, head_tree=None, dep_file="", **kwargs):
         super().__init__(args, relative_dep_mat, use_two_class, **kwargs)
 
         self.padding_idx = -1
@@ -430,16 +433,16 @@ class DepHeadClassifier(DepClassifier):
             print("使用最小生成树，目前仅仅在生成矩阵（计算准确率+generate时）使用")
 
         if head_tree is None:
-            head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
+            head_tree = DepHeadTree(valid_subset=self.args.valid_subset, dep_file=dep_file)
 
         self.no_mlp = getattr(self.args, "no_mlp", False)
         self.biaffine_attention = BiaffineAttentionDependency(args, input_dim=self.mlp_input_dim, head_tree=head_tree,
-                                                              no_mlp=self.no_mlp)
+                                                              no_mlp=self.no_mlp, dep_file=dep_file)
 
         self.teacher_biaffine = None
         if self.share_with_ref == "encoder":
             self.teacher_biaffine = BiaffineAttentionDependency(args, input_dim=self.mlp_input_dim, head_tree=head_tree,
-                                                                no_mlp=self.no_mlp)
+                                                                no_mlp=self.no_mlp, dep_file=dep_file)
 
         self.imitation = getattr(self.args, "imitation", False)
         if self.imitation:
@@ -465,7 +468,7 @@ class DepHeadClassifier(DepClassifier):
             hidden_state = self.encoder(encoder_out, hidden_state, decoder_padding_mask)
         else:
             hidden_state = hidden_state.transpose(0, 1)
-
+        _, _, embed_dim = hidden_state.size()
         hidden_state2 = self.add_position(hidden_state, position_embedding)
         hidden_state2 = self.dropout(hidden_state2)
 
@@ -481,7 +484,7 @@ class DepHeadClassifier(DepClassifier):
         else:
             output, dep_hidden = self.biaffine_attention.forward_classifier(hidden_state2,
                                                                             return_hidden=True)  # [b, tgt_len, tgt_len]
-        return output, hidden_state, other
+        return output, hidden_state2[:, :, :embed_dim], other
 
     def get_reference(self, sample_ids, target_tokens=None):
         head_ref = self.biaffine_attention.get_reference(sample_ids)
@@ -544,11 +547,41 @@ class DepHeadClassifier(DepClassifier):
 
                 dep_mat[i][h][j] = 1
                 dep_mat[i][j][h] = 1
+
                 grand = head[h]
                 if grand == 0:
                     continue
                 dep_mat[i][grand][j] = 1
                 dep_mat[i][j][grand] = 1
+
+            parent_child = {}
+            for c, p in enumerate(head[1: ref_len - 1]):
+                parent_child.setdefault(p.item(), [])
+                parent_child[p.item()].append(c + 1)
+            same_word = []
+            for p, c in parent_child.items():
+                r = []
+                if p + 1 in c:
+
+                    if p == 0:
+                        r = [p + 1]
+                    else:
+                        r = [p, p + 1]
+                    for t in range(2, 1000):
+                        if p + t in c:
+                            r.append(p + t)
+                        else:
+                            break
+                    same_word.append(r)
+            # print(same_word)
+            for same in same_word:
+                if len(same) <= 1:
+                    continue
+                r = dep_mat[i][same[0]]
+                for s in same:
+                    r.masked_fill_(dep_mat[i][s] == 1, 1)
+                for s in same:
+                    dep_mat[i][s] = r
 
         return dep_mat
 
@@ -650,9 +683,9 @@ class DoubleClassifier(DepClassifier):
 
 class DHeadClassifier(DoubleClassifier):
 
-    def __init__(self, args, relative_dep_mat=None, use_two_class=False, **kwargs):
+    def __init__(self, args, relative_dep_mat=None, use_two_class=False, dep_file='', **kwargs):
         super().__init__(args, relative_dep_mat, use_two_class, **kwargs)
-        head_tree = DepHeadTree(valid_subset=self.args.valid_subset)
+        head_tree = DepHeadTree(valid_subset=self.args.valid_subset, dep_file=dep_file)
         print("--------------------student model : ----------------------")
         self.student_encoder = DepHeadClassifier(args, relative_dep_mat, use_two_class, head_tree, **kwargs)
 

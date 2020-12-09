@@ -69,7 +69,7 @@ class DEPRelativeDecoder(NATDecoder):
         # 分类器相关
         predict_dep_model = getattr(args, "predict_dep_model", "none")
         self.dep_classifier = build_dep_classifier(predict_dep_model, args=args, relative_dep_mat=self.relative_dep_mat,
-                                                   use_two_class=use_two_class)
+                                                   use_two_class=use_two_class, dep_file=dep_file)
         self.predict_dep_relative_layer = getattr(args, "predict_dep_relative_layer", -2)
         # print("使用哪层预测依存矩阵，建议100: ", self.predict_dep_relative_layer)
 
@@ -123,7 +123,7 @@ class DEPRelativeDecoder(NATDecoder):
 
     def fusion_dep_hidden(self, dep_hidden, x):
         if self.add_encoder_hidden == "none":
-            return dep_hidden
+            return dep_hidden.transpose(0, 1)
         if self.add_encoder_hidden == "add":
             return dep_hidden.transpose(0, 1) + x
 
@@ -219,7 +219,7 @@ class DEPRelativeDecoder(NATDecoder):
         if self.dep_train_method == "schedule":
             import numpy as np
             p = np.random.rand()
-            if p < update_nums / 200000:  # 这个ratio可以再改变
+            if p < update_nums / 300000:  # 这个ratio可以再改变
                 return False
             else:
                 return True
@@ -274,7 +274,7 @@ class DEPRelativeDecoder(NATDecoder):
                                                                                                         generate=False,
                                                                                                         ref_embedding=ref_embedding,
                                                                                                         **kwargs)
-
+                torch.cuda.empty_cache()
                 if kwargs.get("eval_accuracy", False):
                     loss.setdefault('train_need', {})
                     loss['train_need'].update({
@@ -319,6 +319,7 @@ class DEPRelativeNAT(SuperClass):
             decoder.apply_init_bias()
         return decoder
 
+    @staticmethod
     def add_args(parser):
         SuperClass.add_args(parser)
         DepCoarseClassifier.add_args(parser)
@@ -331,7 +332,7 @@ class DEPRelativeNAT(SuperClass):
         parser.add_argument('--use-two-class', action="store_true")  # 将相同类别归于相关类别
         parser.add_argument('--random-dep-mat', action="store_true")
         parser.add_argument('--random-perturb-mat', type=float, default=0.0)
-        parser.add_argument('--dep-file', type=str, default="iwslt16")
+        parser.add_argument('--dep-file', type=str, default="iwslt16")  # wmt16
 
         # 分类器相关
         parser.add_argument('--predict-dep-model', type=str, default="none",
@@ -340,7 +341,6 @@ class DEPRelativeNAT(SuperClass):
         parser.add_argument('--predict-dep-relative-layer', type=int,
                             default=-2)
         parser.add_argument('--dep-input-ref', action="store_true")
-        parser.add_argument('--encoder-ref', action="store_true")
         parser.add_argument('--joint-encoder', action="store_true")
         parser.add_argument('--add-encoder-hidden', type=str, default="none")  # gate add none
 
