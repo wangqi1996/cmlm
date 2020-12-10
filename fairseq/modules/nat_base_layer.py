@@ -1,8 +1,7 @@
-from typing import Dict, List, Optional
-
 import torch
 import torch.nn as nn
 from torch import Tensor
+from typing import Dict, List, Optional
 
 from fairseq import utils
 from fairseq.modules.nat_base_modules import FeedForward, RelativeSelfAttention, RelativePositionEmbeddings

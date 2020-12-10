@@ -11,10 +11,10 @@ import contextlib
 import logging
 import sys
 import time
-from itertools import chain
 from typing import Any, Dict, List
 
 import torch
+from itertools import chain
 
 from fairseq import checkpoint_utils, distributed_utils, models, optim, utils
 from fairseq.file_io import PathManager
@@ -589,7 +589,7 @@ class Trainer(object):
     @metrics.aggregate("valid")
     def valid_step(self, sample, raise_oom=False):
         """Do forward pass in evaluation mode."""
-        if self._dummy_batch == "DUMMY":
+        if sample is not None and len(sample) > 0:
             self._dummy_batch = sample
         if self.tpu:
             import torch_xla.core.xla_model as xm
@@ -858,7 +858,7 @@ class Trainer(object):
             for remove_k in ['need_print', "train_need"]:
                 if remove_k in log_keys:
                     log_keys.remove(remove_k)
-                    
+
             for k in log_keys:
                 if not ignore:
                     v = sum(log[k] for log in logging_outputs if k in log)

@@ -554,34 +554,34 @@ class DepHeadClassifier(DepClassifier):
                 dep_mat[i][grand][j] = 1
                 dep_mat[i][j][grand] = 1
 
-            parent_child = {}
-            for c, p in enumerate(head[1: ref_len - 1]):
-                parent_child.setdefault(p.item(), [])
-                parent_child[p.item()].append(c + 1)
-            same_word = []
-            for p, c in parent_child.items():
-                r = []
-                if p + 1 in c:
-
-                    if p == 0:
-                        r = [p + 1]
-                    else:
-                        r = [p, p + 1]
-                    for t in range(2, 1000):
-                        if p + t in c:
-                            r.append(p + t)
-                        else:
-                            break
-                    same_word.append(r)
-            # print(same_word)
-            for same in same_word:
-                if len(same) <= 1:
-                    continue
-                r = dep_mat[i][same[0]]
-                for s in same:
-                    r.masked_fill_(dep_mat[i][s] == 1, 1)
-                for s in same:
-                    dep_mat[i][s] = r
+            # parent_child = {}
+            # for c, p in enumerate(head[1: ref_len - 1]):
+            #     parent_child.setdefault(p.item(), [])
+            #     parent_child[p.item()].append(c + 1)
+            # same_word = []
+            # for p, c in parent_child.items():
+            #     r = []
+            #     if p + 1 in c:
+            #
+            #         if p == 0:
+            #             r = [p + 1]
+            #         else:
+            #             r = [p, p + 1]
+            #         for t in range(2, 1000):
+            #             if p + t in c:
+            #                 r.append(p + t)
+            #             else:
+            #                 break
+            #         same_word.append(r)
+            # # print(same_word)
+            # for same in same_word:
+            #     if len(same) <= 1:
+            #         continue
+            #     r = dep_mat[i][same[0]]
+            #     for s in same:
+            #         r.masked_fill_(dep_mat[i][s] == 1, 1)
+            #     for s in same:
+            #         dep_mat[i][s] = r
 
         return dep_mat
 

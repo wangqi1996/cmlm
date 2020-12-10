@@ -4,9 +4,9 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import sys
 from typing import Callable, List, Optional
 
-import sys
 import torch
 
 from fairseq import utils
