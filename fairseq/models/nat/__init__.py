@@ -11,3 +11,5 @@ from .dep_classifier_module import *
 from .GLAT import *
 from .dep_relative_nat import *
 from .dep_classifier import *
+from .dep_mat.oracle_dep import *
+from .dep_mat.glat_biaffine_nat import *

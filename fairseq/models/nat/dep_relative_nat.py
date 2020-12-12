@@ -61,7 +61,14 @@ class DEPRelativeDecoder(NATDecoder):
         # print("三分类转为二分类，建议True: ", use_two_class)
         use_two_class = True
 
-        if getattr(self, "relative_dep_mat", None) is None:
+        relative_layers = getattr(args, "relative_layers", "all")
+
+        self.relative_layers = relative_layers
+        self.layer_ids = []
+        if relative_layers != "all":
+            self.layer_ids = [int(i) for i in relative_layers.split(',')]
+
+        if getattr(self, "relative_dep_mat", None) is None and self.relative_layers != -2:
             dep_file = getattr(self.args, "dep_file", "iwslt16")
             self.relative_dep_mat = RelativeDepMat(valid_subset=self.args.valid_subset, use_two_class=use_two_class,
                                                    args=args, dep_file=dep_file)
@@ -207,6 +214,9 @@ class DEPRelativeDecoder(NATDecoder):
         return x, other
 
     def compute_oracle_dep(self, update_nums, generate=False):
+        if self.relative_layers == -2:
+            return False
+
         if generate:
             return self.use_oracle_dep_generate
 
@@ -225,6 +235,9 @@ class DEPRelativeDecoder(NATDecoder):
                 return True
 
     def compute_predict_dep(self, **kwargs):
+        if self.relative_layers == -2:
+            return False
+
         if "dependency_mat" in kwargs:
             return False
         else:

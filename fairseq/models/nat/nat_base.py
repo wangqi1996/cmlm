@@ -156,9 +156,6 @@ class NAT(NATransformerModel):
                 "factor": self.decoder.length_loss_factor
             }
 
-        if getattr(self, "dependency_classifier_loss", False):
-            dep_classifier_loss = other['dep_classifier_loss']
-            losses.update(dep_classifier_loss)
         return losses
 
     @classmethod
@@ -577,7 +574,7 @@ class NATDecoder(NATransformerDecoder):
                 # length_targets = tgt_mask.sum(1)
                 # mapped_logits = _interpolate_assignment(length_sources, length_targets)  # batch_size, tgt_len, src_len
                 mapped_logits = _interpolate(src_mask, tgt_mask)
-                states = torch.bmm(mapped_logits, src_embed)
+                states = torch.bmm(mapped_logits.to(src_embed.dtype), src_embed)
 
             x, decoder_padding_mask, positions = self.forward_embedding(prev_output_tokens, states, add_position)
 

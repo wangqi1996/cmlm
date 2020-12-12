@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from fairseq.dep import RelativeDepMat, DepHeadTree
+from fairseq.dep import DepHeadTree
 from fairseq.models import BaseFairseqModel
 from fairseq.models.lstm import LSTM
 from fairseq.models.nat import BiaffineAttentionDependency, get_base_mask, \
@@ -146,11 +146,13 @@ class DepClassifier(BaseFairseqModel):
         self.args = args
         self.padding_idx = 0
         self.dep_loss_factor = getattr(self.args, "dep_loss_factor", 1.0)
-        if relative_dep_mat is None:
-            self.relative_dep_mat = RelativeDepMat(valid_subset=self.args.valid_subset, use_two_class=use_two_class,
-                                                   **kwargs)
-        else:
-            self.relative_dep_mat = relative_dep_mat
+        # if relative_dep_mat is None:
+        #     self.relative_dep_mat = RelativeDepMat(valid_subset=self.args.valid_subset, use_two_class=use_two_class,
+        #                                            **kwargs)
+        # else:
+        #     self.relative_dep_mat = relative_dep_mat
+
+        self.relative_dep_mat = relative_dep_mat
 
         self.encoder_dep_input = getattr(self.args, "encoder_dep_input", "transformer")
         self.encoder = None
@@ -179,6 +181,10 @@ class DepClassifier(BaseFairseqModel):
         self.glat_classifier = getattr(self.args, "glat_classifier", "none")
         if self.glat_classifier != "none":
             print("使用glat的方式来训练分类器: ", self.glat_classifier)
+
+        self.increase_p = getattr(self.args, "increase_p", False)
+        if self.increase_p:
+            print("使用increase_p")
 
         self.distill_method = getattr(self.args, "distill_method", "none")
         if self.distill_method != "none":
@@ -210,24 +216,34 @@ class DepClassifier(BaseFairseqModel):
 
     def forward_classifier(self, sample, hidden_state, target_tokens, ref_embedding, position_embedding,
                            decoder_padding_mask, encoder_out, **kwargs):
-        with torch.no_grad():
-            score, dep_hidden, _ = self._forward_classifier(hidden_state, position_embedding, decoder_padding_mask,
-                                                            encoder_out, target_tokens=target_tokens)
-        loss_mask = None
 
+        loss_mask = None
         other = {}
+
+        mask_length = None
         if self.glat_classifier != "none":
+            with torch.no_grad():
+                score, dep_hidden, _ = self._forward_classifier(hidden_state, position_embedding, decoder_padding_mask,
+                                                                encoder_out, target_tokens=target_tokens)
+
             score = score.detach()
             sample_ids = sample['id'].cpu().tolist()
             reference = self.get_reference(sample_ids, target_tokens)
             reference_mask = reference != self.padding_idx
             label = self.get_label(score, target_tokens, reference_mask, use_MST=False, return_head=True)
-            mask_length = self.get_mask_num(label, reference, reference_mask)
+            mask_length = self.get_mask_num(label, reference, reference_mask, kwargs.get('update_nums', 300000))
 
+        if self.increase_p:
+            reference_length = (target_tokens != 0).sum(-1)
+            update_num = kwargs.get('update_nums', 300000)
+            ratio = min((update_num / 300000) * 0.5 + 0.35, 0.8)
+            mask_length = reference_length * (1 - ratio)
+
+        if mask_length != None:
             loss_mask, hidden_state = self.get_random_mask_output(mask_length, target_tokens, hidden_state,
                                                                   ref_embedding)
-            score, dep_hidden, other = self._forward_classifier(hidden_state, position_embedding, decoder_padding_mask,
-                                                                encoder_out, target_tokens=target_tokens)
+        score, dep_hidden, other = self._forward_classifier(hidden_state, position_embedding, decoder_padding_mask,
+                                                            encoder_out, target_tokens=target_tokens)
 
         return score, loss_mask, dep_hidden, other
 
@@ -339,6 +355,7 @@ class DepClassifier(BaseFairseqModel):
         parser.add_argument('--dep-loss-factor', default=1.0, type=float)
         parser.add_argument('--encoder-dep-input', type=str, default="transformer")  # lstm
         parser.add_argument('--glat-classifier', type=str, default="none")  # all、input
+        parser.add_argument('--increase-p', action="store_true")
         parser.add_argument('--distill-method', type=str, default="none")  # kl、mse
         parser.add_argument('--imitation', action="store_true")
         parser.add_argument('--no-mlp', action="store_true")
@@ -398,7 +415,7 @@ class DepClassifier(BaseFairseqModel):
         reference = self.get_reference(sample_ids, target_tokens)
 
         reference_mask = reference != self.padding_idx
-        if loss_mask is not None and self.glat_classifier == "input":
+        if loss_mask is not None:
             if len(loss_mask.shape) != len(reference_mask.shape):
                 loss_mask = loss_mask.unsqueeze(-1)
             reference_mask.masked_fill_(~loss_mask, False)
@@ -436,13 +453,11 @@ class DepHeadClassifier(DepClassifier):
             head_tree = DepHeadTree(valid_subset=self.args.valid_subset, dep_file=dep_file)
 
         self.no_mlp = getattr(self.args, "no_mlp", False)
-        self.biaffine_attention = BiaffineAttentionDependency(args, input_dim=self.mlp_input_dim, head_tree=head_tree,
-                                                              no_mlp=self.no_mlp, dep_file=dep_file)
+        self.biaffine_attention = BiaffineAttentionDependency(input_dim=self.mlp_input_dim, head_tree=head_tree)
 
         self.teacher_biaffine = None
         if self.share_with_ref == "encoder":
-            self.teacher_biaffine = BiaffineAttentionDependency(args, input_dim=self.mlp_input_dim, head_tree=head_tree,
-                                                                no_mlp=self.no_mlp, dep_file=dep_file)
+            self.teacher_biaffine = BiaffineAttentionDependency(input_dim=self.mlp_input_dim, head_tree=head_tree)
 
         self.imitation = getattr(self.args, "imitation", False)
         if self.imitation:
@@ -473,17 +488,17 @@ class DepHeadClassifier(DepClassifier):
         hidden_state2 = self.dropout(hidden_state2)
 
         other = {}
-        if self.imitation:
-            action, imitation_loss, output = self.imitation_module(hidden_state2, target_tokens)
-            hidden_state2 = hidden_state2 + action
-            other = {"action": action, "imitation_loss": imitation_loss, "output": output}
-
-        if teacher and self.teacher_biaffine is not None:
-            output, dep_hidden = self.teacher_biaffine.forward_classifier(hidden_state2,
-                                                                          return_hidden=True)
-        else:
-            output, dep_hidden = self.biaffine_attention.forward_classifier(hidden_state2,
-                                                                            return_hidden=True)  # [b, tgt_len, tgt_len]
+        # if self.imitation:
+        #     action, imitation_loss, output = self.imitation_module(hidden_state2, target_tokens)
+        #     hidden_state2 = hidden_state2 + action
+        #     other = {"action": action, "imitation_loss": imitation_loss, "output": output}
+        #
+        # if teacher and self.teacher_biaffine is not None:
+        #     output, dep_hidden = self.teacher_biaffine.forward_classifier(hidden_state2,
+        #                                                                   return_hidden=True)
+        # else:
+        output, dep_hidden = self.biaffine_attention.forward_classifier(hidden_state2,
+                                                                        return_hidden=True)  # [b, tgt_len, tgt_len]
         return output, hidden_state2[:, :, :embed_dim], other
 
     def get_reference(self, sample_ids, target_tokens=None):
@@ -585,9 +600,10 @@ class DepHeadClassifier(DepClassifier):
 
         return dep_mat
 
-    def get_mask_num(self, label, reference, reference_mask):
+    def get_mask_num(self, label, reference, reference_mask, update_nums):
+        ratio = (1 - update_nums / 300000) * 0.2 + 0.3
         diff = ((label != reference) & reference_mask).sum(-1).detach()
-        mask_length = (diff * 0.5).round()
+        mask_length = (diff * ratio).round()
         return mask_length
 
 

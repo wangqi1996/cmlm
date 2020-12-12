@@ -5,24 +5,8 @@ import torch
 def load_relative_tree(dependency_tree_path):
     """ 不需要add_one """
     print(dependency_tree_path)
-    relative_dependency_mat = []
-
     with open(dependency_tree_path, "r") as f:
-        for index, line in enumerate(f):
-            relation = line.strip('\n').split('\t')
-            relation_list = []
-            for r in relation:  # 目前有两种关系
-                if r.strip() == "":
-                    relation_list.append([])
-                    continue
-                tuple = r.strip().split(',')
-                result = []
-
-                for t in tuple:
-                    result.append([int(i) for i in t.strip().split('-')])
-                relation_list.append(result)
-            relative_dependency_mat.append(relation_list)
-    return relative_dependency_mat
+        return f.readlines()
 
 
 def load_dependency_tree(dependency_tree_path, convert=False, add_one=False, scale=2):
@@ -62,7 +46,7 @@ def load_dependency_tree(dependency_tree_path, convert=False, add_one=False, sca
 def load_dependency_head_tree(dependency_tree_path, convert=False, add_one=False, scale=2):
     """ convert表示是否弄成损失样式  """
     dependency_list = []
-
+    print(dependency_tree_path)
     with open(dependency_tree_path, "r") as f:
         for line in f:
             heads = line.strip().split(',')
@@ -95,6 +79,8 @@ class DepTree():
             return "/home/data_ti5_c/wangdq/data/distill/iwslt16_en_de/"
         if dep_file == "wmt16":
             return "/home/data_ti5_c/wangdq/data/test/wmt16_en_ro/dependency/"
+        if dep_file == "wmt14":
+            return "/home/data_ti5_c/wangdq/data/test/wmt14_en_de/dependency/"
 
     def __init__(self, valid_subset="valid", use_tree=True, only_valid=False, **kwargs):
         if use_tree:
@@ -160,9 +146,7 @@ class DepLayerTree(DepTree):
 class DepHeadTree(DepTree):
 
     def get_dep_tree(self, valid_subset="valid", only_valid=False, dep_file="", **kwargs):
-
         dir_name = self.get_file_dir(dep_file)
-        print(dir_name)
         if not only_valid:
             train_dependency_tree_head = load_dependency_head_tree(
                 dependency_tree_path=dir_name + "dependency_head_2.train.log",
@@ -181,19 +165,12 @@ class DepHeadTree(DepTree):
 class RelativeDepMat(DepTree):
     def get_dep_tree(self, valid_subset="valid", only_valid=False, args=None, dep_file="iwslt16", **kwargs):
 
-        # mat_type = getattr(args, "use_dependency_mat_type", False)
         prefix = "relative_dependency_mat_grandparent"
-        # if mat_type != "grandparent":
-        #     prefix ="relative_dependency_mat"
-        # print("dep_relative_mat: ", prefix)
 
         dir_name = self.get_file_dir(dep_file)
-        print(dir_name)
 
         if valid_subset == "test":
             only_valid = True
-
-        self.use_two_class = kwargs.get("use_two_class", False)
 
         if not only_valid:
             train_relative_dependency_mat = load_relative_tree(
@@ -212,23 +189,55 @@ class RelativeDepMat(DepTree):
 
         # return None, None
 
+    # def get_n_list(self, samples, n):
+    #
+    #     r = []
+    #     size = int(len(samples) / 10)
+    #     for i in range(0, n):
+    #         if i == n - 1:
+    #             r.append(samples[i * size:])
+    #         else:
+    #             r.append(samples[i * size: (i + 1) * size])
+    #     return r
+    #
+    # def process_mat_multi_threads(self, samples):
+    #     thread_nums = 10
+    #     split_list = self.get_n_list(samples, thread_nums)
+    #     from concurrent.futures import ThreadPoolExecutor
+    #     with ThreadPoolExecutor(max_workers=thread_nums) as executor:
+    #         generator = executor.map(self.process_mat, split_list)
+    #
+    #     result = []
+    #     for r in generator:
+    #         result.extend(r)
+    #     return result
+
     def process_mat(self, samples):
-        if samples is None:
-            return None
+        if samples is None or len(samples) == 0:
+            return []
 
         result = []
-        for sample in samples:
+        for line in samples:
+            relation = line.strip('\n').split('\t')
+            sample = []
+            for r in relation:  # 目前有两种关系
+                if r.strip() == "":
+                    sample.append([])
+                    continue
+                tuple = r.strip().split(',')
+                rr = []
+                for t in tuple:
+                    rr.append([int(i) for i in t.strip().split('-')])
+                sample.append(rr)
+
             sample_len = sample[0][0][0]
             mat = torch.LongTensor(sample_len + 2, sample_len + 2).fill_(0)
             mat[1:sample_len + 1, 1:sample_len + 1] = 2  # 不相关
 
-            flag = 3
-            if self.use_two_class:
-                flag = 1
             same_word_relation = sample[1]
             if len(same_word_relation) > 0:
                 for (start_pos, end_pos) in same_word_relation:
-                    mat[start_pos: end_pos, start_pos:end_pos] = flag
+                    mat[start_pos: end_pos, start_pos:end_pos] = 1
 
             # 相关节点=1
             related_relation = sample[2]
@@ -245,48 +254,10 @@ class RelativeDepMat(DepTree):
         batch_size, seq_len = reference.size()
         dep_tensor = reference.new_zeros(size=reference.size()).unsqueeze(-1).repeat(1, 1, seq_len)  # pad=0
 
-        def _perturb(label, mask_length):
-            co_score = score + (dep_tensor[index][:length][:length] == label).long()
-            co_score = co_score.view(-1)
-            _, target_rank = co_score.sort(descending=True)
-            mask = target_rank.new_zeros(target_rank.size()).bool().fill_(False)
-            mask[target_rank[:mask_length]] = True
-            return mask.view(length, length)
-
-        for index, id in enumerate(sample_ids):
-            relative_dep_postion = self.get_one_sentence(id, training)
-            length, _ = relative_dep_postion.size()
-            dep_tensor[index][:length, :length] = relative_dep_postion
-
-            # oracle = dep_tensor[index].clone()
-            if perturb > 0.0:
-                correlation_length = (dep_tensor[index] == 1).sum().item()
-                uncorrelation_length = (dep_tensor[index] == 2).sum().item()
-                mask_length = round(correlation_length * perturb)
-                score = dep_tensor[index][:length][:length].clone().float().uniform_()
-
-                if correlation_length > 0:
-                    _mask_length = min(mask_length, correlation_length)
-                    _perturb_1 = _perturb(1, _mask_length)  # 1->2
-                if uncorrelation_length > 0:
-                    _mask_length = min(mask_length, uncorrelation_length)
-                    _perturb_2 = _perturb(2, _mask_length)  # 2->1
-
-                if correlation_length > 0:
-                    dep_tensor[index].masked_fill_(_perturb_1, 2)
-                if uncorrelation_length > 0:
-                    dep_tensor[index].masked_fill_(_perturb_2, 1)
-
-            # l, _ = dep_tensor[index].size()
-            #
-            # name = ["pad", "positive", "negative", "same"]
-            # for i in [1, 2]:  # 0 pad 1 相关 2 不相关 3 相似
-            #     predict_i = (dep_tensor[index] == i).sum().item()  # 1 是相关
-            #     target_i = (oracle == i).sum().item()
-            #     correct_i = ((dep_tensor[index] == i) & (oracle == i)).sum().item()
-            #     set_key_value("predict_" + name[i], predict_i)
-            #     set_key_value("target_" + name[i], target_i)
-            #     set_key_value("correct_" + name[i], correct_i)
+        relative_positions = self.get_sentences(sample_ids, training)
+        for index, relative_dep_position in enumerate(relative_positions):
+            length, _ = relative_dep_position.size()
+            dep_tensor[index][:length, :length] = relative_dep_position
 
         return dep_tensor
 
@@ -307,3 +278,31 @@ class RelativeDepMat(DepTree):
             dep_tensor[index] = dep_tensor[index].masked_fill(target_cutoff, 1)
 
         return dep_tensor
+
+# if perturb > 0.0:
+#     correlation_length = (dep_tensor[index] == 1).sum().item()
+#     uncorrelation_length = (dep_tensor[index] == 2).sum().item()
+#     mask_length = round(correlation_length * perturb)
+#     score = dep_tensor[index][:length][:length].clone().float().uniform_()
+#
+#     if correlation_length > 0:
+#         _mask_length = min(mask_length, correlation_length)
+#         _perturb_1 = _perturb(1, _mask_length)  # 1->2
+#     if uncorrelation_length > 0:
+#         _mask_length = min(mask_length, uncorrelation_length)
+#         _perturb_2 = _perturb(2, _mask_length)  # 2->1
+#
+#     if correlation_length > 0:
+#         dep_tensor[index].masked_fill_(_perturb_1, 2)
+#     if uncorrelation_length > 0:
+#         dep_tensor[index].masked_fill_(_perturb_2, 1)
+
+
+#
+# def _perturb(label, mask_length):
+#     co_score = score + (dep_tensor[index][:length][:length] == label).long()
+#     co_score = co_score.view(-1)
+#     _, target_rank = co_score.sort(descending=True)
+#     mask = target_rank.new_zeros(target_rank.size()).bool().fill_(False)
+#     mask[target_rank[:mask_length]] = True
+#     return mask.view(length, length)

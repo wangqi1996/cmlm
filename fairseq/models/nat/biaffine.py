@@ -1,14 +1,14 @@
 # encoding=utf-8
 from collections import defaultdict
 
-import numpy as np
+import numpy
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn.init import orthogonal_
 
 from fairseq.data.data_utils import collate_tokens_list
-from fairseq.dep import load_dependency_head_tree, DepHeadTree
+from fairseq.dep import load_dependency_head_tree
 from fairseq.models import register_model_architecture, register_model
 from fairseq.models.nat import CMLMNATransformerModel, cmlm_base_architecture
 from fairseq.util2 import get_base_mask, set_all_token, set_diff_tokens, mean_ds
@@ -83,35 +83,27 @@ class Tarjan:
 
 
 class BiaffineAttentionDependency(nn.Module):
-    def __init__(self, args, input_dim, head_tree=None, no_mlp=False, dep_file=''):
+    def __init__(self, input_dim, head_tree=None):
 
         super().__init__()
-        self.args = args
-        self.no_mlp = no_mlp
 
-        if not self.no_mlp:
-            mlp_input_dim = input_dim
-            self.mlp_dim = 500
-            self.arc_head_mlp = nn.Sequential(
-                nn.Linear(mlp_input_dim, self.mlp_dim),
-                nn.LeakyReLU(),
-                nn.Dropout(0.33))
+        mlp_input_dim = input_dim
+        self.mlp_dim = 500
+        self.arc_head_mlp = nn.Sequential(
+            nn.Linear(mlp_input_dim, self.mlp_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(0.33))
 
-            self.arc_dep_mlp = nn.Sequential(
-                nn.Linear(mlp_input_dim, self.mlp_dim),
-                nn.LeakyReLU(),
-                nn.Dropout(0.33))
-        else:
-            self.mlp_dim = input_dim
+        self.arc_dep_mlp = nn.Sequential(
+            nn.Linear(mlp_input_dim, self.mlp_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(0.33))
 
         self.W_arc = nn.Parameter(orthogonal_(
             torch.empty(self.mlp_dim + 1, self.mlp_dim).cuda()
         ), requires_grad=True)
 
-        if head_tree is None:
-            self.head_tree = DepHeadTree(valid_subset=self.args.valid_subset, dep_file=dep_file)
-        else:
-            self.head_tree = head_tree
+        self.head_tree = head_tree
 
         self.dropout = nn.Dropout(0.33)
 
@@ -119,8 +111,12 @@ class BiaffineAttentionDependency(nn.Module):
 
         # -1表示不用的节点，0表示根节点。
         tree = self.head_tree.get_sentences(sample_ids, training=self.training)
-        tree = [[-1] + t + [-1] for t in tree]  # 特殊处理bos和eos
-        head_label = collate_tokens_list(tree, pad_idx=-1)
+        size = max(len(v) for v in tree)
+        head_label = numpy.empty(shape=(len(tree), size + 2))
+        head_label.fill(-1)
+        for i, value in enumerate(tree):
+            head_label[i][1:len(value) + 1] = value
+
         head_label = torch.from_numpy(head_label).long().cuda()
 
         return head_label
@@ -133,50 +129,20 @@ class BiaffineAttentionDependency(nn.Module):
         return loss
 
     def forward_classifier(self, hidden_state, return_hidden=False):
-        if not self.no_mlp:
-            h_arc_dep = self.arc_dep_mlp(hidden_state)  # batch * max_trg * mlp_dim
-            h_arc_head = self.arc_head_mlp(hidden_state)  # batch * max_trg * mlp_dim
-        else:
-            h_arc_dep, h_arc_head = hidden_state, hidden_state
+        h_arc_dep = self.arc_dep_mlp(hidden_state)  # batch * max_trg * mlp_dim
+        h_arc_head = self.arc_head_mlp(hidden_state)  # batch * max_trg * mlp_dim
 
         batch_size, max_trg_len, decoder_dim = h_arc_head.size()
 
         arc_dep = torch.cat((h_arc_dep, torch.ones(batch_size, max_trg_len, 1).cuda()),
-                            dim=-1)  # batch * trg_len * (dim+1)
+                            dim=-1).to(h_arc_head.dtype)
 
-        head_dep_result = arc_dep.matmul(self.W_arc).matmul(h_arc_head.transpose(1, 2))  # batch * trg_len * trg_len
+        head_dep_result = arc_dep.matmul(self.W_arc).matmul(h_arc_head.transpose(1, 2))
 
         if not return_hidden:
             return head_dep_result
         else:
             return head_dep_result, hidden_state
-
-    # def forward(self, hidden_state, reference):
-    #
-    #     reference_mask = reference != self.pad
-    #     length = reference_mask.long().sum(-1)
-    #
-    #     if self.contain_lstm:
-    #         unpaded_reference = nn.utils.rnn.pack_padded_sequence(hidden_state, lengths=length,
-    #                                                               batch_first=True, enforce_sorted=False)
-    #         decoder_input, _ = self.LSTM(unpaded_reference)
-    #         decoder_input, _ = nn.utils.rnn.pad_packed_sequence(decoder_input, batch_first=True, padding_value=self.pad)
-    #         size = decoder_input.size()
-    #         decoder_input = self.batch_norm(decoder_input.contiguous().view(-1, size[2])).contiguous().view(size)
-    #     else:
-    #         decoder_input = hidden_state
-    #
-    #     h_arc_dep = self.arc_dep_mlp(decoder_input)  # batch * max_trg * mlp_dim
-    #     h_arc_head = self.arc_head_mlp(decoder_input)  # batch * max_trg * mlp_dim
-    #
-    #     batch_size, max_trg_len, decoder_dim = h_arc_head.size()
-    #
-    #     arc_dep = torch.cat((h_arc_dep, torch.ones(batch_size, max_trg_len, 1).cuda()),
-    #                         dim=-1)  # batch * trg_len * (dim+1)
-    #
-    #     head_dep_result = arc_dep.matmul(self.W_arc).matmul(h_arc_head.transpose(1, 2))  # batch * trg_len * trg_len
-    #
-    #     return head_dep_result
 
     def compute_accuracy(self, head_dep_result, head_mask, head_dep_reference):
         pred_head = head_dep_result.argmax(-1)
@@ -189,71 +155,63 @@ class BiaffineAttentionDependency(nn.Module):
 
         return all_predict_head, correct_predict_head
 
-    # def compute_accuracy_nosum(self, head_dep_result, head_mask, head_dep_reference):
-    #     pred_head = head_dep_result.argmax(-1)
-    #
-    #     diff = (pred_head != head_dep_reference) & head_mask
-    #     s = diff.sum(-1)
-    #
-    #     return s
-
-    def parser_tree(self, parse_probs, length, tokens_to_keep, ensure_tree=True):
-        """
-        adopted from : https://github.com/jcyk/Dynet-Biaffine-dependency-parser/blob/master/lib/utils.py
-        """
-        I = np.eye(len(tokens_to_keep))
-        parse_probs = parse_probs * tokens_to_keep * (1 - I)  # 去除mask和自身节点
-        parse_preds = np.argmax(parse_probs, axis=1)
-        tokens = np.arange(1, length)
-        roots = np.where(parse_preds[tokens] == 0)[0] + 1
-        # ensure at least one root
-        if len(roots) < 1:
-            root_probs = parse_probs[tokens, 0]
-            old_head_probs = parse_probs[tokens, parse_preds[tokens]]
-            new_root_probs = root_probs / old_head_probs
-            new_root = tokens[np.argmax(new_root_probs)]
-            parse_preds[new_root] = 0
-        elif len(roots) > 1:
-            root_probs = parse_probs[roots, 0]
-            parse_probs[roots, 0] = 0
-            new_heads = np.argmax(parse_probs[roots][:, tokens], axis=1) + 1
-            new_head_probs = parse_probs[roots, new_heads] / root_probs
-            new_root = roots[np.argmin(new_head_probs)]
-            parse_preds[roots] = new_heads
-            parse_preds[new_root] = 0
-        tarjan = Tarjan(parse_preds, tokens)
-        cycles = tarjan.SCCs
-        for SCC in tarjan.SCCs:
-            if len(SCC) > 1:
-                dependents = set()
-                to_visit = set(SCC)
-                # In my tuition, it is all the node related to this SCC
-                while len(to_visit) > 0:
-                    node = to_visit.pop()
-                    if not node in dependents:
-                        dependents.add(node)
-                        to_visit.update(tarjan.edges[node])
-                # The indices of the nodes that participate in the cycle
-                cycle = np.array(list(SCC))
-                # The probabilities of the current heads
-                old_heads = parse_preds[cycle]
-                old_head_probs = parse_probs[cycle, old_heads]
-                # Set the probability of depending on a non-head to zero
-                non_heads = np.array(list(dependents))
-                parse_probs[np.repeat(cycle, len(non_heads)), np.repeat([non_heads], len(cycle), axis=0).flatten()] = 0
-                # Get new potential heads and their probabilities
-                new_heads = np.argmax(parse_probs[cycle][:, tokens], axis=1) + 1
-                new_head_probs = parse_probs[cycle, new_heads] / old_head_probs
-                # Select the most probable change
-                change = np.argmax(new_head_probs)
-                changed_cycle = cycle[change]
-                old_head = old_heads[change]
-                new_head = new_heads[change]
-                # Make the change
-                parse_preds[changed_cycle] = new_head
-                tarjan.edges[new_head].add(changed_cycle)
-                tarjan.edges[old_head].remove(changed_cycle)
-            return parse_preds
+    # def parser_tree(self, parse_probs, length, tokens_to_keep, ensure_tree=True):
+    #     """
+    #     adopted from : https://github.com/jcyk/Dynet-Biaffine-dependency-parser/blob/master/lib/utils.py
+    #     """
+    #     I = np.eye(len(tokens_to_keep))
+    #     parse_probs = parse_probs * tokens_to_keep * (1 - I)  # 去除mask和自身节点
+    #     parse_preds = np.argmax(parse_probs, axis=1)
+    #     tokens = np.arange(1, length)
+    #     roots = np.where(parse_preds[tokens] == 0)[0] + 1
+    #     # ensure at least one root
+    #     if len(roots) < 1:
+    #         root_probs = parse_probs[tokens, 0]
+    #         old_head_probs = parse_probs[tokens, parse_preds[tokens]]
+    #         new_root_probs = root_probs / old_head_probs
+    #         new_root = tokens[np.argmax(new_root_probs)]
+    #         parse_preds[new_root] = 0
+    #     elif len(roots) > 1:
+    #         root_probs = parse_probs[roots, 0]
+    #         parse_probs[roots, 0] = 0
+    #         new_heads = np.argmax(parse_probs[roots][:, tokens], axis=1) + 1
+    #         new_head_probs = parse_probs[roots, new_heads] / root_probs
+    #         new_root = roots[np.argmin(new_head_probs)]
+    #         parse_preds[roots] = new_heads
+    #         parse_preds[new_root] = 0
+    #     tarjan = Tarjan(parse_preds, tokens)
+    #     cycles = tarjan.SCCs
+    #     for SCC in tarjan.SCCs:
+    #         if len(SCC) > 1:
+    #             dependents = set()
+    #             to_visit = set(SCC)
+    #             # In my tuition, it is all the node related to this SCC
+    #             while len(to_visit) > 0:
+    #                 node = to_visit.pop()
+    #                 if not node in dependents:
+    #                     dependents.add(node)
+    #                     to_visit.update(tarjan.edges[node])
+    #             # The indices of the nodes that participate in the cycle
+    #             cycle = np.array(list(SCC))
+    #             # The probabilities of the current heads
+    #             old_heads = parse_preds[cycle]
+    #             old_head_probs = parse_probs[cycle, old_heads]
+    #             # Set the probability of depending on a non-head to zero
+    #             non_heads = np.array(list(dependents))
+    #             parse_probs[np.repeat(cycle, len(non_heads)), np.repeat([non_heads], len(cycle), axis=0).flatten()] = 0
+    #             # Get new potential heads and their probabilities
+    #             new_heads = np.argmax(parse_probs[cycle][:, tokens], axis=1) + 1
+    #             new_head_probs = parse_probs[cycle, new_heads] / old_head_probs
+    #             # Select the most probable change
+    #             change = np.argmax(new_head_probs)
+    #             changed_cycle = cycle[change]
+    #             old_head = old_heads[change]
+    #             new_head = new_heads[change]
+    #             # Make the change
+    #             parse_preds[changed_cycle] = new_head
+    #             tarjan.edges[new_head].add(changed_cycle)
+    #             tarjan.edges[old_head].remove(changed_cycle)
+    #         return parse_preds
 
 
 @register_model("biaffine")

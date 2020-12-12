@@ -11,10 +11,10 @@ import contextlib
 import logging
 import sys
 import time
+from itertools import chain
 from typing import Any, Dict, List
 
 import torch
-from itertools import chain
 
 from fairseq import checkpoint_utils, distributed_utils, models, optim, utils
 from fairseq.file_io import PathManager
@@ -76,6 +76,8 @@ class Trainer(object):
                 _set_module_by_path(self._model, path, ref)
 
         self._dummy_batch = "DUMMY"  # indicates we don't have a dummy batch at first
+        self._train_dummy_batch = "DUMMY"
+        self._valid_dummy_batch = "DUMMY"
         self._lr_scheduler = None
         self._num_updates = 0
         self._num_xla_compiles = 0  # for TPUs
@@ -381,9 +383,6 @@ class Trainer(object):
     @metrics.aggregate("train")
     def train_step(self, samples, raise_oom=False):
         """Do forward, backward and parameter update."""
-        if self._dummy_batch == "DUMMY":
-            self._dummy_batch = samples[0]
-
         self._set_seed()
         self.model.train()
         self.criterion.train()
@@ -394,14 +393,7 @@ class Trainer(object):
         # forward and backward pass
         logging_outputs, sample_size, ooms = [], 0, 0
         for i, sample in enumerate(samples):
-            sample = self._prepare_sample(sample)
-            if sample is None:
-                # when sample is None, run forward/backward on a dummy batch
-                # and ignore the resulting gradients
-                sample = self._prepare_sample(self._dummy_batch)
-                is_dummy_batch = True
-            else:
-                is_dummy_batch = False
+            sample, is_dummy_batch = self._prepare_sample(sample, train=True)
 
             def maybe_no_sync():
                 """
@@ -589,8 +581,6 @@ class Trainer(object):
     @metrics.aggregate("valid")
     def valid_step(self, sample, raise_oom=False):
         """Do forward pass in evaluation mode."""
-        if sample is not None and len(sample) > 0:
-            self._dummy_batch = sample
         if self.tpu:
             import torch_xla.core.xla_model as xm
             xm.rendezvous('valid_step')  # wait for all workers
@@ -600,12 +590,7 @@ class Trainer(object):
             self.model.eval()
             self.criterion.eval()
 
-            sample = self._prepare_sample(sample)
-            if sample is None:
-                sample = self._prepare_sample(self._dummy_batch)
-                is_dummy_batch = True
-            else:
-                is_dummy_batch = False
+            sample, is_dummy_batch = self._prepare_sample(sample, train=False)
 
             try:
                 _loss, sample_size, logging_output = self.task.valid_step(
@@ -738,7 +723,7 @@ class Trainer(object):
         """Aggregate training time in seconds."""
         return time.time() - self._start_time + self._previous_training_time
 
-    def _prepare_sample(self, sample):
+    def _prepare_sample(self, sample, is_dummy=False, train=True):
         if sample == "DUMMY":
             raise Exception(
                 "Trying to use an uninitialized 'dummy' batch. This usually indicates "
@@ -746,8 +731,17 @@ class Trainer(object):
                 "participating GPUs. Try reducing the batch size or using fewer GPUs."
             )
 
+        if train:
+            self._dummy_batch = self._train_dummy_batch
+        else:
+            self._dummy_batch = self._valid_dummy_batch
+
         if sample is None or len(sample) == 0:
-            return None
+            assert (
+                    self._dummy_batch is not None and len(self._dummy_batch) > 0
+            ), "Invalid dummy batch: {}".format(self._dummy_batch)
+            sample, _ = self._prepare_sample(self._dummy_batch, is_dummy=True)
+            return sample, True
 
         if self.cuda:
             sample = utils.move_to_cuda(sample)
@@ -768,7 +762,13 @@ class Trainer(object):
         if self.args.bf16:
             sample = utils.apply_to_sample(apply_bfloat16, sample)
 
-        return sample
+        if train and self._train_dummy_batch == "DUMMY":
+            self._train_dummy_batch = sample
+
+        if not train and self._valid_dummy_batch == "DUMMY":
+            self._valid_dummy_batch = sample
+
+        return sample, False
 
     def _set_seed(self):
         # Set seed based on args.seed and the update number so that we get
